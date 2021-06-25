@@ -31,3 +31,6 @@ sc-network = { git = "https://github.com/paritytech/substrate", branch = "kiz-st
 sc-network-gossip = { git = "https://github.com/paritytech/substrate", branch = "kiz-staking-miner" }
 
 beefy-primitives = { path = "../beefy-primitives" }
+
+[dev-dependencies]
+sc-network-test = { git = "https://github.com/paritytech/substrate", branch = "master" }
