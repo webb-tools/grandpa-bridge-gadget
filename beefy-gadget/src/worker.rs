@@ -40,14 +40,20 @@ use beefy_primitives::{
 	BEEFY_ENGINE_ID, GENESIS_AUTHORITY_SET_ID,
 };
 
-use crate::{
-	error,
-	gossip::{topic, GossipValidator},
-	keystore::BeefyKeystore,
-	metric_inc, metric_set,
-	metrics::Metrics,
-	notification, round, Client,
-};
+use crate::{Client, error, gossip::{GossipValidator, topic, webb_topic}, keystore::BeefyKeystore, metric_inc, metric_set, metrics::Metrics, notification, round};
+
+pub struct MultiPartyECDSASettings {
+	pub threshold: usize,
+	pub parties: usize,
+	pub accepted: bool,
+	pub party_index: usize,
+	pub keygen: crate::dkg::Keygen,
+}
+
+pub struct DKGState {
+	pub curr_dkg: Option<MultiPartyECDSASettings>,
+	pub past_dkg: Option<MultiPartyECDSASettings>,
+}
 
 pub(crate) struct WorkerParams<B, BE, C>
 where
@@ -61,6 +67,7 @@ where
 	pub gossip_validator: Arc<GossipValidator<B>>,
 	pub min_block_delta: u32,
 	pub metrics: Option<Metrics>,
+	pub dkg_state: DKGState,
 }
 
 /// A BEEFY worker plays the BEEFY protocol
@@ -89,6 +96,8 @@ where
 	last_signed_id: u64,
 	// keep rustc happy
 	_backend: PhantomData<BE>,
+	// dkg state
+	dkg_state: DKGState,
 }
 
 impl<B, C, BE> BeefyWorker<B, C, BE>
@@ -114,6 +123,7 @@ where
 			gossip_validator,
 			min_block_delta,
 			metrics,
+			dkg_state,
 		} = worker_params;
 
 		BeefyWorker {
@@ -130,6 +140,7 @@ where
 			best_grandpa_block: client.info().finalized_number,
 			best_beefy_block: None,
 			last_signed_id: 0,
+			dkg_state,
 			_backend: PhantomData,
 		}
 	}
@@ -178,6 +189,27 @@ where
 		trace!(target: "beefy", "🥩 active validator set: {:?}", new);
 
 		new
+	}
+
+	fn get_authority_index(&self, header: &B::Header) -> Option<usize> {
+		let new = if let Some(new) = find_authorities_change::<B>(header) {
+			Some(new)
+		} else {
+			let at = BlockId::hash(header.hash());
+			self.client.runtime_api().validator_set(&at).ok()
+		};
+
+		trace!(target: "beefy", "🥩 active validator set: {:?}", new);
+
+		let set = new.unwrap_or_else(|| panic!("Help"));
+		let public = self.key_store.authority_id(&self.key_store.public_keys().unwrap()).unwrap_or_else(|| panic!("Halp"));
+		for i in 0..set.validators.len() {
+			if set.validators[i] == public {
+				return Some(i);
+			}
+		}
+
+		return None;
 	}
 
 	/// Verify `active` validator set for `block` against the key store
@@ -297,6 +329,44 @@ where
 			self.gossip_engine
 				.lock()
 				.gossip_message(topic::<B>(), encoded_message, false);
+		}
+
+		let is_epoch_over = false;
+		if !is_epoch_over {
+			let authority_id = if let Some(id) = self.key_store.authority_id(self.rounds.validators().as_slice()) {
+				debug!(target: "beefy", "🥩 Local authority id: {:?}", id);
+				id
+			} else {
+				debug!(target: "beefy", "🥩 Missing validator id - can't vote for: {:?}", notification.header.hash());
+				return;
+			};
+
+			// TODO: Send the proper message for the round we're on and the signed data.
+			let dkg_message = crate::dkg::DKGMessage {
+				id: authority_id,
+				dkg_type: crate::dkg::DKGType::MultiPartyECDSA,
+				message: vec![],
+			};
+
+			let encoded_dkg_message = dkg_message.encode();
+
+			self.gossip_engine
+				.lock()
+				.gossip_message(webb_topic::<B>(), encoded_dkg_message, false);
+		} else {
+			let curr_dkg = self.dkg_state.curr_dkg.take().unwrap();
+			let party_inx = curr_dkg.party_index.clone();
+			let thresh = curr_dkg.threshold.clone();
+			let n = curr_dkg.parties.clone();
+			self.dkg_state.curr_dkg = Some(MultiPartyECDSASettings {
+				threshold: thresh,
+				parties: n,
+				// TODO: Get party index from active authority set
+				party_index: party_inx,
+				accepted: false,
+				keygen: crate::dkg::Keygen::new(party_inx as u16, thresh as u16, n as u16).unwrap(),
+			});
+			self.dkg_state.past_dkg = Some(curr_dkg);
 		}
 	}
 

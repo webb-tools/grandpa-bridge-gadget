@@ -47,6 +47,14 @@ where
 	<<B::Header as Header>::Hashing as Hash>::hash(b"beefy")
 }
 
+/// Gossip engine messages topic
+pub(crate) fn webb_topic<B: Block>() -> B::Hash
+where
+	B: Block,
+{
+	<<B::Header as Header>::Hashing as Hash>::hash(b"webb")
+}
+
 /// A type that represents hash of the message.
 pub type MessageHash = [u8; 8];
 

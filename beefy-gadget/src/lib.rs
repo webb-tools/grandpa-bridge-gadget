@@ -28,6 +28,7 @@ use sp_keystore::SyncCryptoStorePtr;
 use sp_runtime::traits::Block;
 
 use beefy_primitives::BeefyApi;
+use worker::DKGState;
 
 mod error;
 mod gossip;
@@ -36,6 +37,7 @@ mod metrics;
 mod round;
 mod worker;
 
+pub mod dkg;
 pub mod notification;
 
 pub const BEEFY_PROTOCOL_NAME: &str = "/paritytech/beefy/1";
@@ -142,6 +144,10 @@ where
 		gossip_validator,
 		min_block_delta,
 		metrics,
+		dkg_state: DKGState {
+			curr_dkg: None,
+			past_dkg: None,
+		},
 	};
 
 	let worker = worker::BeefyWorker::<_, _, _>::new(worker_params);
