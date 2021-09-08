@@ -47,7 +47,7 @@ where
 	<<B::Header as Header>::Hashing as Hash>::hash(b"beefy")
 }
 
-/// Gossip engine messages topic
+/// Gossip engine webb messages topic
 pub(crate) fn webb_topic<B: Block>() -> B::Hash
 where
 	B: Block,

@@ -40,7 +40,14 @@ use beefy_primitives::{
 	BEEFY_ENGINE_ID, GENESIS_AUTHORITY_SET_ID,
 };
 
-use crate::{Client, error, gossip::{GossipValidator, topic, webb_topic}, keystore::BeefyKeystore, metric_inc, metric_set, metrics::Metrics, notification, round};
+use crate::{
+	error,
+	gossip::{topic, webb_topic, GossipValidator},
+	keystore::BeefyKeystore,
+	metric_inc, metric_set,
+	metrics::Metrics,
+	notification, round, Client,
+};
 
 pub struct MultiPartyECDSASettings {
 	pub threshold: usize,
@@ -51,6 +58,7 @@ pub struct MultiPartyECDSASettings {
 }
 
 pub struct DKGState {
+	pub is_epoch_over: bool,
 	pub curr_dkg: Option<MultiPartyECDSASettings>,
 	pub past_dkg: Option<MultiPartyECDSASettings>,
 }
@@ -199,10 +207,13 @@ where
 			self.client.runtime_api().validator_set(&at).ok()
 		};
 
-		trace!(target: "beefy", "🥩 active validator set: {:?}", new);
+		trace!(target: "webb", "🕸️🕸️🕸️ active validator set: {:?}", new);
 
 		let set = new.unwrap_or_else(|| panic!("Help"));
-		let public = self.key_store.authority_id(&self.key_store.public_keys().unwrap()).unwrap_or_else(|| panic!("Halp"));
+		let public = self
+			.key_store
+			.authority_id(&self.key_store.public_keys().unwrap())
+			.unwrap_or_else(|| panic!("Halp"));
 		for i in 0..set.validators.len() {
 			if set.validators[i] == public {
 				return Some(i);
@@ -210,6 +221,19 @@ where
 		}
 
 		return None;
+	}
+
+	fn get_threshold(&self, header: &B::Header) -> Option<usize> {
+		let at = BlockId::hash(header.hash());
+		let thresh = self.client.runtime_api().signature_threshold(&at).ok();
+
+		trace!(target: "webb", "🕸️🕸️🕸️ active signature threshold: {:?}", thresh);
+
+		if thresh.is_some() {
+			Some(thresh.unwrap() as usize)
+		} else {
+			None
+		}
 	}
 
 	/// Verify `active` validator set for `block` against the key store
@@ -331,13 +355,12 @@ where
 				.gossip_message(topic::<B>(), encoded_message, false);
 		}
 
-		let is_epoch_over = false;
-		if !is_epoch_over {
+		if !self.dkg_state.is_epoch_over {
 			let authority_id = if let Some(id) = self.key_store.authority_id(self.rounds.validators().as_slice()) {
-				debug!(target: "beefy", "🥩 Local authority id: {:?}", id);
+				debug!(target: "beefy", "🕸️🕸️🕸️ Local authority id: {:?}", id);
 				id
 			} else {
-				debug!(target: "beefy", "🥩 Missing validator id - can't vote for: {:?}", notification.header.hash());
+				debug!(target: "beefy", "🕸️🕸️🕸️ Missing validator id - can't vote for: {:?}", notification.header.hash());
 				return;
 			};
 
@@ -348,16 +371,28 @@ where
 				message: vec![],
 			};
 
+			debug!(target: "beefy", "🕸️🕸️🕸️ DKG Message: {:?}", dkg_message);
 			let encoded_dkg_message = dkg_message.encode();
 
 			self.gossip_engine
 				.lock()
-				.gossip_message(webb_topic::<B>(), encoded_dkg_message, false);
+				.gossip_message(topic::<B>(), encoded_dkg_message, false);
 		} else {
-			let curr_dkg = self.dkg_state.curr_dkg.take().unwrap();
-			let party_inx = curr_dkg.party_index.clone();
-			let thresh = curr_dkg.threshold.clone();
-			let n = curr_dkg.parties.clone();
+			let party_inx = self.get_authority_index(&notification.header).unwrap() + 1;
+			let thresh = self.get_threshold(&notification.header).unwrap();
+			let n = self.rounds.validators().len();
+
+			if let Some(dkg) = self.dkg_state.curr_dkg.take() {
+				self.dkg_state.past_dkg = Some(dkg);
+			}
+
+			debug!(
+				target: "beefy",
+				"🕸️🕸️🕸️ Starting new DKG w/ size {:?}, threshold {:?}, party_index {:?}",
+				n,
+				thresh,
+				party_inx,
+			);
 			self.dkg_state.curr_dkg = Some(MultiPartyECDSASettings {
 				threshold: thresh,
 				parties: n,
@@ -366,7 +401,7 @@ where
 				accepted: false,
 				keygen: crate::dkg::Keygen::new(party_inx as u16, thresh as u16, n as u16).unwrap(),
 			});
-			self.dkg_state.past_dkg = Some(curr_dkg);
+			self.dkg_state.is_epoch_over = !self.dkg_state.is_epoch_over;
 		}
 	}
 

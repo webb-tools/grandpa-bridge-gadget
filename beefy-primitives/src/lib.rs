@@ -139,5 +139,7 @@ sp_api::decl_runtime_apis! {
 	{
 		/// Return the current active BEEFY validator set
 		fn validator_set() -> ValidatorSet<crypto::AuthorityId>;
+		/// Return the current signature threshold for the DKG
+		fn signature_threshold() -> u32;
 	}
 }

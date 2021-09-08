@@ -473,6 +473,10 @@ impl_runtime_apis! {
 		fn validator_set() -> ValidatorSet<BeefyId> {
 			Beefy::validator_set()
 		}
+
+		fn signature_threshold() -> u32 {
+			Beefy::sig_threshold()
+		}
 	}
 
 	impl frame_system_rpc_runtime_api::AccountNonceApi<Block, AccountId, Index> for Runtime {

@@ -163,6 +163,7 @@ fn testnet_genesis(
 		},
 		beefy: BeefyConfig {
 			authorities: initial_authorities.iter().map(|x| (x.2.clone())).collect(),
+			threshold: (initial_authorities.len() / 2) as u32 + 1,
 		},
 		sudo: SudoConfig {
 			// Assign network admin rights.

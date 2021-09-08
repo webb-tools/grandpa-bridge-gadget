@@ -145,6 +145,7 @@ where
 		min_block_delta,
 		metrics,
 		dkg_state: DKGState {
+			is_epoch_over: true,
 			curr_dkg: None,
 			past_dkg: None,
 		},
