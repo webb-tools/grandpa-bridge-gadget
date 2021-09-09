@@ -1,8 +1,11 @@
 use codec::{Decode, Encode};
+use log::debug;
 use sp_keystore::{Error, SyncCryptoStore};
 use std::sync::Arc;
 
 pub use multi_party_ecdsa::protocols::multi_party_ecdsa::gg_2020::{party_i::*, state_machine::keygen::*};
+
+use crate::worker::DKGState;
 
 #[derive(Debug, Decode, Encode)]
 #[cfg_attr(feature = "scale-info", derive(scale_info::TypeInfo))]

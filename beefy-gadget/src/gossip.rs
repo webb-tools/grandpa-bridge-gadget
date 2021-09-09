@@ -31,7 +31,7 @@ use beefy_primitives::{
 	MmrRootHash, VoteMessage,
 };
 
-use crate::keystore::BeefyKeystore;
+use crate::{dkg::DKGMessage, keystore::BeefyKeystore};
 
 // Limit BEEFY gossip by keeping only a bound number of voting rounds alive.
 const MAX_LIVE_GOSSIP_ROUNDS: usize = 3;
@@ -178,6 +178,10 @@ where
 				// TODO: report peer
 				debug!(target: "beefy", "🥩 Bad signature on message: {:?}, from: {:?}", msg, sender);
 			}
+		}
+
+		if let Ok(msg) = DKGMessage::<Public>::decode(&mut data) {
+			debug!(target: "beefy", "🕸️ Got dkg message: {:?}, from: {:?}", msg, sender);
 		}
 
 		ValidationResult::Discard
