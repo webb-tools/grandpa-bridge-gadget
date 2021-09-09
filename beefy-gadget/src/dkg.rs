@@ -19,9 +19,9 @@ pub enum DKGType {
 /// and is gossiped to its peers.
 #[derive(Debug, Decode, Encode)]
 #[cfg_attr(feature = "scale-info", derive(scale_info::TypeInfo))]
-pub struct DKGMessage<Id> {
+pub struct DKGMessage<Public> {
 	/// Node authority id
-	pub id: Id,
+	pub id: Public,
 	/// DKG protocol type identifier
 	pub dkg_type: DKGType,
 	/// DKG message contents

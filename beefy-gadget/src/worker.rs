@@ -372,14 +372,20 @@ where
 				};
 
 				// TODO: Send the proper message for the round we're on and the signed data.
+
 				let dkg_message = crate::dkg::DKGMessage {
 					id: authority_id,
 					dkg_type: crate::dkg::DKGType::MultiPartyECDSA,
 					message: vec![],
 				};
 
-				debug!(target: "beefy", "🕸️  DKG Message: {:?}", dkg_message);
 				let encoded_dkg_message = dkg_message.encode();
+				debug!(
+					target: "beefy",
+					"🕸️  DKG Message: {:?}, encoded: {:?}",
+					dkg_message,
+					encoded_dkg_message
+				);
 
 				self.gossip_engine
 					.lock()
@@ -475,15 +481,15 @@ where
 	pub(crate) async fn run(mut self) {
 		let mut votes = Box::pin(self.gossip_engine.lock().messages_for(topic::<B>()).filter_map(
 			|notification| async move {
-				debug!(target: "beefy", "🥩 Got vote message: {:?}", notification);
+				// debug!(target: "beefy", "🥩 Got vote message: {:?}", notification);
 
 				VoteMessage::<MmrRootHash, NumberFor<B>, Public, Signature>::decode(&mut &notification.message[..]).ok()
 			},
 		));
 
-		let mut webb_dkg = Box::pin(self.gossip_engine.lock().messages_for(webb_topic::<B>()).filter_map(
+		let mut webb_dkg = Box::pin(self.gossip_engine.lock().messages_for(topic::<B>()).filter_map(
 			|notification| async move {
-				debug!(target: "beefy", "🕸️  Got webb message: {:?}", notification);
+				// debug!(target: "beefy", "🕸️  Got webb message: {:?}", notification);
 
 				DKGMessage::<Public>::decode(&mut &notification.message[..]).ok()
 			},
