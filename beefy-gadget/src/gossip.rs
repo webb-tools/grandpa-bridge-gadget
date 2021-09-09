@@ -181,7 +181,7 @@ where
 		}
 
 		if let Ok(msg) = DKGMessage::<Public>::decode(&mut data) {
-			debug!(target: "beefy", "🕸️ Got dkg message: {:?}, from: {:?}", msg, sender);
+			debug!(target: "beefy", "🕸️  Got webb dkg message: {:?}, from: {:?}", msg, sender);
 		}
 
 		ValidationResult::Discard

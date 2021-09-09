@@ -173,7 +173,7 @@ where
 			self.client.runtime_api().validator_set(&at).ok()
 		};
 
-		trace!(target: "webb", "🕸️ active validator set: {:?}", new);
+		trace!(target: "webb", "🕸️  active validator set: {:?}", new);
 
 		let set = new.unwrap_or_else(|| panic!("Help"));
 		let public = self
@@ -193,7 +193,7 @@ where
 		let at = BlockId::hash(header.hash());
 		let thresh = self.client.runtime_api().signature_threshold(&at).ok();
 
-		trace!(target: "webb", "🕸️ active signature threshold: {:?}", thresh);
+		trace!(target: "webb", "🕸️  active signature threshold: {:?}", thresh);
 
 		if thresh.is_some() {
 			Some(thresh.unwrap() as usize)
@@ -364,10 +364,10 @@ where
 			// if the DKG has not be prepared / terminated, continue preparing it
 			if !self.dkg_state.accepted {
 				let authority_id = if let Some(id) = self.key_store.authority_id(self.rounds.validators().as_slice()) {
-					debug!(target: "beefy", "🕸️ Local authority id: {:?}", id);
+					debug!(target: "beefy", "🕸️  Local authority id: {:?}", id);
 					id
 				} else {
-					debug!(target: "beefy", "🕸️ Missing validator id - can't vote for: {:?}", notification.header.hash());
+					debug!(target: "beefy", "🕸️  Missing validator id - can't vote for: {:?}", notification.header.hash());
 					return;
 				};
 
@@ -378,15 +378,12 @@ where
 					message: vec![],
 				};
 
-				debug!(target: "beefy", "🕸️ DKG Message: {:?}", dkg_message);
+				debug!(target: "beefy", "🕸️  DKG Message: {:?}", dkg_message);
 				let encoded_dkg_message = dkg_message.encode();
-
-				// let keygen = &mut self.dkg_state.curr_dkg.unwrap().keygen;
-				// keygen.round.set(self.rounds.round());
 
 				self.gossip_engine
 					.lock()
-					.gossip_message(webb_topic::<B>(), encoded_dkg_message, false);
+					.gossip_message(topic::<B>(), encoded_dkg_message, true);
 			}
 		} else {
 			let party_inx = self.get_authority_index(&notification.header).unwrap() + 1;
@@ -399,7 +396,7 @@ where
 
 			debug!(
 				target: "beefy",
-				"🕸️ Starting new DKG w/ size {:?}, threshold {:?}, party_index {:?}",
+				"🕸️  Starting new DKG w/ size {:?}, threshold {:?}, party_index {:?}",
 				n,
 				thresh,
 				party_inx,
@@ -466,10 +463,10 @@ where
 		match message.dkg_type {
 			crate::dkg::DKGType::MultiPartyECDSA => {
 				// TODO: Handle MP-ECDSA DKG messages.
-				debug!(target: "beefy", "🕸️ DKG Message: {:?}", message);
+				debug!(target: "beefy", "🕸️  DKG Message: {:?}", message);
 			}
 			_ => {
-				warn!(target: "beefy", "🕸️ Received DKG message of unknown type: {:?}", message.dkg_type);
+				warn!(target: "beefy", "🕸️  Received DKG message of unknown type: {:?}", message.dkg_type);
 				return;
 			}
 		}
@@ -486,7 +483,7 @@ where
 
 		let mut webb_dkg = Box::pin(self.gossip_engine.lock().messages_for(webb_topic::<B>()).filter_map(
 			|notification| async move {
-				debug!(target: "beefy", "🕸️ Got webb message: {:?}", notification);
+				debug!(target: "beefy", "🕸️  Got webb message: {:?}", notification);
 
 				DKGMessage::<Public>::decode(&mut &notification.message[..]).ok()
 			},
