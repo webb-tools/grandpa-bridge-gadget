@@ -21,7 +21,6 @@ use std::{collections::BTreeSet, fmt::Debug, marker::PhantomData, sync::Arc};
 use codec::{Codec, Decode, Encode};
 use futures::{future, FutureExt, StreamExt};
 use log::{debug, error, info, trace, warn};
-use multi_party_ecdsa::protocols::multi_party_ecdsa::gg_2020::state_machine::keygen::LocalKey;
 use parking_lot::Mutex;
 
 use sc_client_api::{Backend, FinalityNotification, FinalityNotifications};
@@ -42,30 +41,14 @@ use beefy_primitives::{
 };
 
 use crate::{
-	dkg::DKGMessage,
-	error,
-	gossip::{topic, webb_topic, GossipValidator},
+	dkg::{DKGMessage, DKGState, DKGType, MultiPartyECDSASettings},
+	error::{self},
+	gossip::{topic, GossipValidator},
 	keystore::BeefyKeystore,
 	metric_inc, metric_set,
 	metrics::Metrics,
 	notification, round, Client,
 };
-
-pub struct MultiPartyECDSASettings {
-	pub threshold: usize,
-	pub parties: usize,
-	pub accepted: bool,
-	pub party_index: usize,
-	pub keygen: crate::dkg::Keygen,
-	pub local_key: Option<LocalKey>,
-}
-
-pub struct DKGState {
-	pub accepted: bool,
-	pub is_epoch_over: bool,
-	pub curr_dkg: Option<MultiPartyECDSASettings>,
-	pub past_dkg: Option<MultiPartyECDSASettings>,
-}
 
 pub(crate) struct WorkerParams<B, BE, C>
 where
@@ -372,24 +355,38 @@ where
 				};
 
 				// TODO: Send the proper message for the round we're on and the signed data.
+				if let Some(curr_dkg) = self.dkg_state.curr_dkg.as_mut() {
+					let mut outgoing_messages: Vec<Vec<u8>> = vec![];
+					if let Some(pm) = curr_dkg.get_outgoing_message() {
+						outgoing_messages = pm
+							.iter()
+							.map(|m| {
+								let m_ser = bincode::serialize(&m).unwrap();
+								let dkg_message = DKGMessage {
+									id: authority_id.clone(),
+									dkg_type: DKGType::MultiPartyECDSA,
+									message: m_ser,
+								};
+								let encoded_dkg_message = dkg_message.encode();
+								debug!(
+									target: "beefy",
+									"🕸️  DKG Message: {:?}, encoded: {:?}",
+									dkg_message,
+									encoded_dkg_message
+								);
+								encoded_dkg_message
+							})
+							.collect::<Vec<Vec<u8>>>();
+					}
 
-				let dkg_message = crate::dkg::DKGMessage {
-					id: authority_id,
-					dkg_type: crate::dkg::DKGType::MultiPartyECDSA,
-					message: vec![],
-				};
+					for message in &outgoing_messages {
+						self.gossip_engine
+							.lock()
+							.gossip_message(topic::<B>(), message.clone(), true);
+					}
 
-				let encoded_dkg_message = dkg_message.encode();
-				debug!(
-					target: "beefy",
-					"🕸️  DKG Message: {:?}, encoded: {:?}",
-					dkg_message,
-					encoded_dkg_message
-				);
-
-				self.gossip_engine
-					.lock()
-					.gossip_message(topic::<B>(), encoded_dkg_message, true);
+					curr_dkg.proceed();
+				}
 			}
 		} else {
 			let party_inx = self.get_authority_index(&notification.header).unwrap() + 1;
@@ -407,14 +404,11 @@ where
 				thresh,
 				party_inx,
 			);
-			self.dkg_state.curr_dkg = Some(MultiPartyECDSASettings {
-				threshold: thresh,
-				parties: n,
-				party_index: party_inx,
-				accepted: false,
-				keygen: crate::dkg::Keygen::new(party_inx as u16, thresh as u16, n as u16).unwrap(),
-				local_key: None,
-			});
+			let curr_dkg = MultiPartyECDSASettings::new(thresh, n, party_inx);
+			if curr_dkg.is_err() {
+				panic!("MPC Party creation failed");
+			}
+			self.dkg_state.curr_dkg = curr_dkg.ok();
 			self.dkg_state.is_epoch_over = !self.dkg_state.is_epoch_over;
 		}
 	}
@@ -467,9 +461,16 @@ where
 
 	fn handle_dkg_message(&mut self, message: DKGMessage<Public>) {
 		match message.dkg_type {
-			crate::dkg::DKGType::MultiPartyECDSA => {
-				// TODO: Handle MP-ECDSA DKG messages.
+			DKGType::MultiPartyECDSA => {
 				debug!(target: "beefy", "🕸️  DKG Message: {:?}", message);
+				if let Some(curr_dkg) = self.dkg_state.curr_dkg.as_mut() {
+					curr_dkg.handle_incoming(&message.message);
+					curr_dkg.try_finish();
+					if curr_dkg.local_key.is_some() {
+						debug!(target: "beefy", "🕸️  DKG protocol successfully completed");
+						self.dkg_state.accepted = true;
+					}
+				}
 			}
 			_ => {
 				warn!(target: "beefy", "🕸️  Received DKG message of unknown type: {:?}", message.dkg_type);

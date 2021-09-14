@@ -16,6 +16,7 @@
 
 use std::sync::Arc;
 
+use dkg::DKGState;
 use log::debug;
 use prometheus::Registry;
 
@@ -28,7 +29,6 @@ use sp_keystore::SyncCryptoStorePtr;
 use sp_runtime::traits::Block;
 
 use beefy_primitives::BeefyApi;
-use worker::DKGState;
 
 mod error;
 mod gossip;
