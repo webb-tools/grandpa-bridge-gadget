@@ -152,6 +152,7 @@ where
 		sender: &PeerId,
 		mut data: &[u8],
 	) -> ValidationResult<B::Hash> {
+		let mut data_copy = data; // TODO VoteMessage and DKGMessage can be of same enum type
 		if let Ok(msg) = VoteMessage::<MmrRootHash, NumberFor<B>, Public, Signature>::decode(&mut data) {
 			let msg_hash = twox_64(data);
 			let round = msg.commitment.block_number;
@@ -180,8 +181,8 @@ where
 			}
 		}
 
-		debug!(target: "beefy", "🕸️  Got a message: {:?}, from: {:?}", data, sender);
-		match DKGMessage::<Public>::decode(&mut data) {
+		debug!(target: "beefy", "🕸️  Got a message: {:?}, from: {:?}", data_copy, sender);
+		match DKGMessage::<Public>::decode(&mut data_copy) {
 			Ok(msg) => {
 				debug!(target: "beefy", "🕸️  Got webb dkg message: {:?}, from: {:?}", msg, sender);
 			}
