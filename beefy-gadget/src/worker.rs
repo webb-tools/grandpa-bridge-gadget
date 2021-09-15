@@ -361,14 +361,15 @@ where
 						outgoing_messages = pm
 							.iter()
 							.map(|m| {
-								let m_ser = bincode::serialize(&m).unwrap();
+								debug!(target: "beefy", "🕸️ MPC protocol message {:?}", *m);
+								let m_ser = bincode::serialize(m).unwrap();
 								let dkg_message = DKGMessage {
 									id: authority_id.clone(),
 									dkg_type: DKGType::MultiPartyECDSA,
 									message: m_ser,
 								};
 								let encoded_dkg_message = dkg_message.encode();
-								debug!(
+								trace!(
 									target: "beefy",
 									"🕸️  DKG Message: {:?}, encoded: {:?}",
 									dkg_message,
@@ -383,6 +384,7 @@ where
 						self.gossip_engine
 							.lock()
 							.gossip_message(topic::<B>(), message.clone(), true);
+						trace!(target: "beefy", "🕸️  Sent DKG Message {:?}", *message);
 					}
 
 					curr_dkg.proceed();
@@ -459,21 +461,21 @@ where
 		}
 	}
 
-	fn handle_dkg_message(&mut self, message: DKGMessage<Public>) {
-		match message.dkg_type {
+	fn handle_dkg_message(&mut self, id: Public, dkg_type: DKGType, message: Vec<u8>) {
+		debug!(target: "beefy", "🕸️  Process DKG message id: {:?}, type: {:?}, message: {:?}", id, dkg_type, message);
+		match dkg_type {
 			DKGType::MultiPartyECDSA => {
-				debug!(target: "beefy", "🕸️  DKG Message: {:?}", message);
 				if let Some(curr_dkg) = self.dkg_state.curr_dkg.as_mut() {
-					curr_dkg.handle_incoming(&message.message);
+					curr_dkg.handle_incoming(&message);
 					curr_dkg.try_finish();
 					if curr_dkg.local_key.is_some() {
-						debug!(target: "beefy", "🕸️  DKG protocol successfully completed");
+						debug!(target: "beefy", "🕸️  DKG keygen round completed");
 						self.dkg_state.accepted = true;
 					}
 				}
 			}
 			_ => {
-				warn!(target: "beefy", "🕸️  Received DKG message of unknown type: {:?}", message.dkg_type);
+				warn!(target: "beefy", "🕸️  Received DKG message of unknown type: {:?}", dkg_type);
 				return;
 			}
 		}
@@ -520,7 +522,7 @@ where
 				},
 				dkg_msg = webb_dkg.next().fuse() => {
 					if let Some(dkg_msg) = dkg_msg {
-						self.handle_dkg_message(dkg_msg);
+						self.handle_dkg_message(dkg_msg.id, dkg_msg.dkg_type, dkg_msg.message);
 					} else {
 						return;
 					}

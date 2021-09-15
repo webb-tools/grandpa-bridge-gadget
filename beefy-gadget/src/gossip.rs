@@ -181,10 +181,11 @@ where
 			}
 		}
 
-		debug!(target: "beefy", "🕸️  Got a message: {:?}, from: {:?}", data_copy, sender);
+		trace!(target: "beefy", "🕸️  Got a message: {:?}, from: {:?}", data_copy, sender);
 		match DKGMessage::<Public>::decode(&mut data_copy) {
 			Ok(msg) => {
-				debug!(target: "beefy", "🕸️  Got webb dkg message: {:?}, from: {:?}", msg, sender);
+				trace!(target: "beefy", "🕸️  Got webb dkg message: {:?}, from: {:?}", msg, sender);
+				return ValidationResult::ProcessAndKeep(self.topic);
 			}
 			Err(e) => {
 				debug!(target: "beefy", "🕸️  Got invalid webb dkg message: {:?}, from: {:?}", e, sender);
