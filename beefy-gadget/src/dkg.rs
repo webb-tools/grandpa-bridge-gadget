@@ -69,7 +69,7 @@ impl MultiPartyECDSASettings {
 
 	pub fn get_outgoing_message(&mut self) -> Option<&mut Vec<Msg<ProtocolMessage>>> {
 		if !self.keygen.message_queue().is_empty() {
-			trace!(target: "beefy", "🕸️ message queue len: {}", self.keygen.message_queue().len());
+			trace!(target: "beefy", "🕸️ get outgoing messages, queue len: {}", self.keygen.message_queue().len());
 			return Some(self.keygen.message_queue());
 		}
 		None
@@ -78,11 +78,18 @@ impl MultiPartyECDSASettings {
 	pub fn proceed(&mut self) {
 		if self.keygen.wants_to_proceed() {
 			trace!(target: "beefy", "🕸️  proceed");
-			self.keygen.proceed();
+			//TODO, handle asynchronously
+			match self.keygen.proceed() {
+				Ok(_) => {}
+				Err(err) => {
+					error!(target: "beefy", "🕸️ error encountered during proceed: {:?}", err);
+				}
+			}
 		}
 	}
 
 	pub fn handle_incoming(&mut self, data: &[u8]) -> Result<(), MPCError> {
+		trace!(target: "beefy", "🕸️ handle incoming message");
 		if data.is_empty() {
 			warn!(
 				target: "beefy", "🕸️ got empty message");
@@ -92,6 +99,7 @@ impl MultiPartyECDSASettings {
 		if Some(self.keygen.party_ind()) != msg.receiver
 			&& (msg.receiver.is_some() || msg.sender == self.keygen.party_ind())
 		{
+			warn!(target: "beefy", "🕸️ ignore messages sent by self");
 			return Ok(());
 		}
 		trace!(
@@ -101,23 +109,30 @@ impl MultiPartyECDSASettings {
 			msg.receiver.is_none(),
 			msg.body,
 		);
-		debug!(target: "beefy", "🕸️ before: {:?}", self.keygen);
+		debug!(target: "beefy", "🕸️ state before incoming message processing: {:?}", self.keygen);
 		match self.keygen.handle_incoming(msg.clone()) {
 			Ok(()) => (),
-			Err(err) if err.is_critical() => return Err(MPCError::CryptoOperation(err.to_string())),
+			Err(err) if err.is_critical() => {
+				error!(target: "beefy", "🕸️ Critical error encountered: {:?}", err);
+				return Err(MPCError::CryptoOperation(err.to_string()));
+			}
 			Err(err) => {
 				error!(target: "beefy", "🕸️ Non-critical error encountered: {:?}", err);
 			}
 		}
-		debug!(target: "beefy", "🕸️ after : {:?}", self.keygen);
+		debug!(target: "beefy", "🕸️ state after incoming message processing: {:?}", self.keygen);
 		Ok(())
 	}
 
 	/// If protocol is successfully completed, `self.local_key` will have valid value after this call.
 	pub fn try_finish(&mut self) {
 		if self.keygen.is_finished() {
+			debug!(target: "beefy", "🕸️ protocol is finished, extracting output");
 			match self.keygen.pick_output() {
-				Some(Ok(k)) => self.local_key = Some(k),
+				Some(Ok(k)) => {
+					self.local_key = Some(k);
+					debug!(target: "beefy", "🕸️ local share key is extracted");
+				}
 				Some(Err(e)) => panic!("protocol finished with error result"),
 				None => panic!("protocol finished with no result"),
 			}
