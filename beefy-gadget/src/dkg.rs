@@ -83,13 +83,18 @@ impl MultiPartyECDSASettings {
 	}
 
 	pub fn handle_incoming(&mut self, data: &[u8]) -> Result<(), MPCError> {
+		if data.is_empty() {
+			warn!(
+				target: "beefy", "🕸️ got empty message");
+			return Ok(());
+		}
 		let msg: Msg<ProtocolMessage> = bincode::deserialize(&data[..]).unwrap();
 		if Some(self.keygen.party_ind()) != msg.receiver
 			&& (msg.receiver.is_some() || msg.sender == self.keygen.party_ind())
 		{
 			return Ok(());
 		}
-		debug!(
+		trace!(
 			target: "beefy", "🕸️ party {} got message from={}, broadcast={}: {:?}",
 			self.keygen.party_ind(),
 			msg.sender,
