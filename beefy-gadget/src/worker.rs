@@ -346,49 +346,7 @@ where
 		if !self.dkg_state.is_epoch_over {
 			// if the DKG has not be prepared / terminated, continue preparing it
 			if !self.dkg_state.accepted {
-				let authority_id = if let Some(id) = self.key_store.authority_id(self.rounds.validators().as_slice()) {
-					debug!(target: "beefy", "🕸️  Local authority id: {:?}", id);
-					id
-				} else {
-					debug!(target: "beefy", "🕸️  Missing validator id - can't vote for: {:?}", notification.header.hash());
-					return;
-				};
-
-				// TODO: Send the proper message for the round we're on and the signed data.
-				if let Some(curr_dkg) = self.dkg_state.curr_dkg.as_mut() {
-					let mut outgoing_messages: Vec<Vec<u8>> = vec![];
-					if let Some(pm) = curr_dkg.get_outgoing_message() {
-						outgoing_messages = pm
-							.iter()
-							.map(|m| {
-								debug!(target: "beefy", "🕸️ MPC protocol message {:?}", *m);
-								let m_ser = bincode::serialize(m).unwrap();
-								let dkg_message = DKGMessage {
-									id: authority_id.clone(),
-									dkg_type: DKGType::MultiPartyECDSA,
-									message: m_ser,
-								};
-								let encoded_dkg_message = dkg_message.encode();
-								trace!(
-									target: "beefy",
-									"🕸️  DKG Message: {:?}, encoded: {:?}",
-									dkg_message,
-									encoded_dkg_message
-								);
-								encoded_dkg_message
-							})
-							.collect::<Vec<Vec<u8>>>();
-					}
-
-					for message in &outgoing_messages {
-						self.gossip_engine
-							.lock()
-							.gossip_message(topic::<B>(), message.clone(), true);
-						trace!(target: "beefy", "🕸️  Sent DKG Message {:?}", *message);
-					}
-
-					curr_dkg.proceed();
-				}
+				self.send_outgoing_dkg_messages();
 			}
 		} else {
 			let party_inx = self.get_authority_index(&notification.header).unwrap() + 1;
@@ -411,6 +369,7 @@ where
 				panic!("MPC Party creation failed");
 			}
 			self.dkg_state.curr_dkg = curr_dkg.ok();
+			self.send_outgoing_dkg_messages();
 			self.dkg_state.is_epoch_over = !self.dkg_state.is_epoch_over;
 		}
 	}
@@ -461,12 +420,38 @@ where
 		}
 	}
 
-	fn handle_dkg_message(&mut self, id: Public, dkg_type: DKGType, message: Vec<u8>) {
+	fn send_outgoing_dkg_messages(&mut self) {
+		debug!(target: "beefy", "🕸️ Try sending DKG messages");
+		let authority_id = if let Some(id) = self.key_store.authority_id(self.rounds.validators().as_slice()) {
+			debug!(target: "beefy", "🕸️  Local authority id: {:?}", id);
+			id
+		} else {
+			panic!("error");
+		};
+		if let Some(curr_dkg) = self.dkg_state.curr_dkg.as_mut() {
+			curr_dkg.proceed();
+
+			if let Some(outgoing_messages) = curr_dkg.get_outgoing_message(&authority_id) {
+				for message in &outgoing_messages {
+					self.gossip_engine
+						.lock()
+						.gossip_message(topic::<B>(), message.clone(), true);
+					trace!(target: "beefy", "🕸️  Sent DKG Message {:?}", *message);
+				}
+			}
+		}
+	}
+
+	fn process_incoming_dkg_message(&mut self, id: Public, dkg_type: DKGType, message: Vec<u8>) {
 		debug!(target: "beefy", "🕸️  Process DKG message id: {:?}, type: {:?}, message: {:?}", id, dkg_type, message);
 		match dkg_type {
 			DKGType::MultiPartyECDSA => {
 				if let Some(curr_dkg) = self.dkg_state.curr_dkg.as_mut() {
 					curr_dkg.handle_incoming(&message);
+					self.send_outgoing_dkg_messages();
+				}
+
+				if let Some(curr_dkg) = self.dkg_state.curr_dkg.as_mut() {
 					curr_dkg.try_finish();
 					if curr_dkg.local_key.is_some() {
 						debug!(target: "beefy", "🕸️  DKG keygen round completed");
@@ -522,7 +507,7 @@ where
 				},
 				dkg_msg = webb_dkg.next().fuse() => {
 					if let Some(dkg_msg) = dkg_msg {
-						self.handle_dkg_message(dkg_msg.id, dkg_msg.dkg_type, dkg_msg.message);
+						self.process_incoming_dkg_message(dkg_msg.id, dkg_msg.dkg_type, dkg_msg.message);
 					} else {
 						return;
 					}

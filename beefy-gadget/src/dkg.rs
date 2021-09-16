@@ -67,20 +67,46 @@ impl MultiPartyECDSASettings {
 		})
 	}
 
-	pub fn get_outgoing_message(&mut self) -> Option<&mut Vec<Msg<ProtocolMessage>>> {
+	pub fn get_outgoing_message(&mut self, id: &Public) -> Option<Vec<Vec<u8>>> {
 		if !self.keygen.message_queue().is_empty() {
-			trace!(target: "beefy", "🕸️ get outgoing messages, queue len: {}", self.keygen.message_queue().len());
-			return Some(self.keygen.message_queue());
+			trace!(target: "beefy", "🕸️ outgoing messages, queue len: {}", self.keygen.message_queue().len());
+
+			return Some(
+				self.keygen
+					.message_queue()
+					.iter()
+					.map(|m| {
+						debug!(target: "beefy", "🕸️ MPC protocol message {:?}", *m);
+						let m_ser = bincode::serialize(m).unwrap();
+						let dkg_message = DKGMessage {
+							id: id.clone(),
+							dkg_type: DKGType::MultiPartyECDSA,
+							message: m_ser,
+						};
+						let encoded_dkg_message = dkg_message.encode();
+						trace!(
+							target: "beefy",
+							"🕸️  DKG Message: {:?}, encoded: {:?}",
+							dkg_message,
+							encoded_dkg_message
+						);
+						encoded_dkg_message
+					})
+					.collect::<Vec<Vec<u8>>>(),
+			);
 		}
 		None
 	}
 
 	pub fn proceed(&mut self) {
 		if self.keygen.wants_to_proceed() {
-			trace!(target: "beefy", "🕸️  proceed");
+			trace!(target: "beefy", "🕸️ Party {} wants to proceed", self.keygen.party_ind());
+			trace!(target: "beefy", "🕸️ before: {:?}", self.keygen);
 			//TODO, handle asynchronously
 			match self.keygen.proceed() {
-				Ok(_) => {}
+				Ok(_) => {
+					trace!(target: "beefy", "🕸️ after: {:?}", self.keygen);
+				}
 				Err(err) => {
 					error!(target: "beefy", "🕸️ error encountered during proceed: {:?}", err);
 				}

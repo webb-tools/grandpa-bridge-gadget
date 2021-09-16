@@ -185,7 +185,7 @@ where
 		match DKGMessage::<Public>::decode(&mut data_copy) {
 			Ok(msg) => {
 				trace!(target: "beefy", "🕸️  Got webb dkg message: {:?}, from: {:?}", msg, sender);
-				return ValidationResult::ProcessAndKeep(self.topic);
+				return ValidationResult::ProcessAndDiscard(self.topic);
 			}
 			Err(e) => {
 				debug!(target: "beefy", "🕸️  Got invalid webb dkg message: {:?}, from: {:?}", e, sender);
