@@ -74,7 +74,7 @@ impl MultiPartyECDSASettings {
 			return Some(
 				self.keygen
 					.message_queue()
-					.iter()
+					.into_iter()
 					.map(|m| {
 						debug!(target: "beefy", "🕸️ MPC protocol message {:?}", *m);
 						let m_ser = bincode::serialize(m).unwrap();
