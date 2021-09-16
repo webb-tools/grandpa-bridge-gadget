@@ -467,13 +467,13 @@ where
 	}
 
 	pub(crate) async fn run(mut self) {
-		let mut votes = Box::pin(self.gossip_engine.lock().messages_for(topic::<B>()).filter_map(
+		/* 		let mut votes = Box::pin(self.gossip_engine.lock().messages_for(topic::<B>()).filter_map(
 			|notification| async move {
 				// debug!(target: "beefy", "🥩 Got vote message: {:?}", notification);
 
 				VoteMessage::<MmrRootHash, NumberFor<B>, Public, Signature>::decode(&mut &notification.message[..]).ok()
 			},
-		));
+		)); */
 
 		let mut webb_dkg = Box::pin(self.gossip_engine.lock().messages_for(topic::<B>()).filter_map(
 			|notification| async move {
@@ -488,35 +488,35 @@ where
 			let gossip_engine = future::poll_fn(|cx| engine.lock().poll_unpin(cx));
 
 			futures::select! {
-				notification = self.finality_notifications.next().fuse() => {
-					if let Some(notification) = notification {
-						self.handle_finality_notification(notification);
-					} else {
-						return;
-					}
-				},
-				vote = votes.next().fuse() => {
-					if let Some(vote) = vote {
-						self.handle_vote(
-							(vote.commitment.payload, vote.commitment.block_number),
-							(vote.id, vote.signature),
-						);
-					} else {
-						return;
-					}
-				},
-				dkg_msg = webb_dkg.next().fuse() => {
-					if let Some(dkg_msg) = dkg_msg {
-						self.process_incoming_dkg_message(dkg_msg.id, dkg_msg.dkg_type, dkg_msg.message);
-					} else {
-						return;
-					}
-				},
-				_ = gossip_engine.fuse() => {
-					error!(target: "beefy", "🥩 Gossip engine has terminated.");
-					return;
-				}
-			}
+							notification = self.finality_notifications.next().fuse() => {
+								if let Some(notification) = notification {
+									self.handle_finality_notification(notification);
+								} else {
+									return;
+								}
+							},
+			/* 				vote = votes.next().fuse() => {
+								if let Some(vote) = vote {
+									self.handle_vote(
+										(vote.commitment.payload, vote.commitment.block_number),
+										(vote.id, vote.signature),
+									);
+								} else {
+									return;
+								}
+							}, */
+							dkg_msg = webb_dkg.next().fuse() => {
+								if let Some(dkg_msg) = dkg_msg {
+									self.process_incoming_dkg_message(dkg_msg.id, dkg_msg.dkg_type, dkg_msg.message);
+								} else {
+									return;
+								}
+							},
+							_ = gossip_engine.fuse() => {
+								error!(target: "beefy", "🥩 Gossip engine has terminated.");
+								return;
+							}
+						}
 		}
 	}
 }
