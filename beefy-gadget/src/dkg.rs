@@ -71,29 +71,31 @@ impl MultiPartyECDSASettings {
 		if !self.keygen.message_queue().is_empty() {
 			trace!(target: "beefy", "🕸️ outgoing messages, queue len: {}", self.keygen.message_queue().len());
 
-			return Some(
-				self.keygen
-					.message_queue()
-					.into_iter()
-					.map(|m| {
-						debug!(target: "beefy", "🕸️ MPC protocol message {:?}", *m);
-						let m_ser = bincode::serialize(m).unwrap();
-						let dkg_message = DKGMessage {
-							id: id.clone(),
-							dkg_type: DKGType::MultiPartyECDSA,
-							message: m_ser,
-						};
-						let encoded_dkg_message = dkg_message.encode();
-						trace!(
-							target: "beefy",
-							"🕸️  DKG Message: {:?}, encoded: {:?}",
-							dkg_message,
-							encoded_dkg_message
-						);
+			let enc_messages = self
+				.keygen
+				.message_queue()
+				.into_iter()
+				.map(|m| {
+					debug!(target: "beefy", "🕸️ MPC protocol message {:?}", *m);
+					let m_ser = bincode::serialize(m).unwrap();
+					let dkg_message = DKGMessage {
+						id: id.clone(),
+						dkg_type: DKGType::MultiPartyECDSA,
+						message: m_ser,
+					};
+					let encoded_dkg_message = dkg_message.encode();
+					trace!(
+						target: "beefy",
+						"🕸️  DKG Message: {:?}, encoded: {:?}",
+						dkg_message,
 						encoded_dkg_message
-					})
-					.collect::<Vec<Vec<u8>>>(),
-			);
+					);
+					encoded_dkg_message
+				})
+				.collect::<Vec<Vec<u8>>>();
+
+			self.keygen.message_queue().clear();
+			return Some(enc_messages);
 		}
 		None
 	}
