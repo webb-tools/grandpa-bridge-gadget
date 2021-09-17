@@ -41,9 +41,9 @@ use beefy_primitives::{
 };
 
 use crate::{
-	dkg::{DKGMessage, DKGState, DKGType, MultiPartyECDSASettings},
+	dkg::{webb_topic, DKGMessage, DKGState, DKGType, MultiPartyECDSASettings},
 	error::{self},
-	gossip::{topic, webb_topic, GossipValidator},
+	gossip::{topic, GossipValidator},
 	keystore::BeefyKeystore,
 	metric_inc, metric_set,
 	metrics::Metrics,

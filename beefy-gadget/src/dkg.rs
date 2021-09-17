@@ -3,6 +3,7 @@ use codec::{Decode, Encode};
 use log::{debug, error, info, trace, warn};
 use round_based::{IsCritical, Msg, StateMachine};
 use sp_keystore::{Error, SyncCryptoStore};
+use sp_runtime::traits::{Block, Hash, Header, NumberFor};
 use std::sync::Arc;
 
 pub use multi_party_ecdsa::protocols::multi_party_ecdsa::gg_2020::{party_i::*, state_machine::keygen::*};
@@ -14,6 +15,14 @@ use beefy_primitives::crypto::Public;
 #[cfg_attr(feature = "scale-info", derive(scale_info::TypeInfo))]
 pub enum DKGType {
 	MultiPartyECDSA,
+}
+
+/// Gossip engine webb messages topic
+pub(crate) fn webb_topic<B: Block>() -> B::Hash
+where
+	B: Block,
+{
+	<<B::Header as Header>::Hashing as Hash>::hash(b"webb")
 }
 
 /// WEBB DKG (distributed key generation) message.

@@ -31,7 +31,10 @@ use beefy_primitives::{
 	MmrRootHash, VoteMessage,
 };
 
-use crate::{dkg::DKGMessage, keystore::BeefyKeystore};
+use crate::{
+	dkg::{webb_topic, DKGMessage},
+	keystore::BeefyKeystore,
+};
 
 // Limit BEEFY gossip by keeping only a bound number of voting rounds alive.
 const MAX_LIVE_GOSSIP_ROUNDS: usize = 3;
@@ -45,14 +48,6 @@ where
 	B: Block,
 {
 	<<B::Header as Header>::Hashing as Hash>::hash(b"beefy")
-}
-
-/// Gossip engine webb messages topic
-pub(crate) fn webb_topic<B: Block>() -> B::Hash
-where
-	B: Block,
-{
-	<<B::Header as Header>::Hashing as Hash>::hash(b"webb")
 }
 
 /// A type that represents hash of the message.
