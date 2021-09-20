@@ -75,7 +75,7 @@ impl MultiPartyECDSASettings {
 		})
 	}
 
-	pub fn get_outgoing_message(&mut self, id: &Public) -> Option<Vec<Vec<u8>>> {
+	pub fn get_outgoing_messages(&mut self, id: &Public) -> Option<Vec<Vec<u8>>> {
 		if !self.keygen.message_queue().is_empty() {
 			trace!(target: "webb", "🕸️ outgoing messages, queue len: {}", self.keygen.message_queue().len());
 
@@ -163,11 +163,11 @@ impl MultiPartyECDSASettings {
 	/// If protocol is successfully completed, `self.local_key` will have valid value after this call.
 	pub fn try_finish(&mut self) {
 		if self.keygen.is_finished() {
-			debug!(target: "webb", "🕸️ protocol is finished, extracting output");
+			info!(target: "webb", "🕸️ protocol is finished, extracting output");
 			match self.keygen.pick_output() {
 				Some(Ok(k)) => {
 					self.local_key = Some(k);
-					debug!(target: "webb", "🕸️ local share key is extracted");
+					info!(target: "webb", "🕸️ local share key is extracted");
 				}
 				Some(Err(e)) => panic!("protocol finished with error result"),
 				None => panic!("protocol finished with no result"),

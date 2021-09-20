@@ -425,7 +425,7 @@ where
 		if let Some(curr_dkg) = self.dkg_state.curr_dkg.as_mut() {
 			curr_dkg.proceed();
 
-			if let Some(outgoing_messages) = curr_dkg.get_outgoing_message(&authority_id) {
+			if let Some(outgoing_messages) = curr_dkg.get_outgoing_messages(&authority_id) {
 				for message in &outgoing_messages {
 					self.gossip_engine
 						.lock()

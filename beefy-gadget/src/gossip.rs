@@ -180,7 +180,7 @@ where
 		match DKGMessage::<Public>::decode(&mut data_copy) {
 			Ok(msg) => {
 				trace!(target: "webb", "🕸️  Got webb dkg message: {:?}, from: {:?}", msg, sender);
-				return ValidationResult::ProcessAndDiscard(webb_topic::<B>());
+				return ValidationResult::ProcessAndKeep(webb_topic::<B>());
 			}
 			Err(e) => {
 				error!(target: "webb", "🕸️  Got invalid webb dkg message: {:?}, from: {:?}", e, sender);
