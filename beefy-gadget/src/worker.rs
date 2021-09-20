@@ -350,8 +350,8 @@ where
 				self.dkg_state.past_dkg = Some(dkg);
 			}
 
-			debug!(
-				target: "beefy",
+			info!(
+				target: "webb",
 				"🕸️  Starting new DKG w/ size {:?}, threshold {:?}, party_index {:?}",
 				n,
 				thresh,
@@ -415,9 +415,9 @@ where
 	}
 
 	fn send_outgoing_dkg_messages(&mut self) {
-		debug!(target: "beefy", "🕸️ Try sending DKG messages");
+		debug!(target: "webb", "🕸️ Try sending DKG messages");
 		let authority_id = if let Some(id) = self.key_store.authority_id(self.rounds.validators().as_slice()) {
-			debug!(target: "beefy", "🕸️  Local authority id: {:?}", id);
+			debug!(target: "webb", "🕸️  Local authority id: {:?}", id);
 			id
 		} else {
 			panic!("error");
@@ -430,14 +430,14 @@ where
 					self.gossip_engine
 						.lock()
 						.gossip_message(webb_topic::<B>(), message.clone(), true);
-					trace!(target: "beefy", "🕸️  Sent DKG Message {:?}", *message);
+					trace!(target: "webb", "🕸️  Sent DKG Message {:?}", *message);
 				}
 			}
 		}
 	}
 
 	fn process_incoming_dkg_message(&mut self, id: Public, dkg_type: DKGType, message: Vec<u8>) {
-		debug!(target: "beefy", "🕸️  Process DKG message id: {:?}, type: {:?}, message: {:?}", id, dkg_type, message);
+		debug!(target: "webb", "🕸️  Process DKG message id: {:?}, type: {:?}, message: {:?}", id, dkg_type, message);
 		match dkg_type {
 			DKGType::MultiPartyECDSA => {
 				if let Some(curr_dkg) = self.dkg_state.curr_dkg.as_mut() {
@@ -448,13 +448,13 @@ where
 				if let Some(curr_dkg) = self.dkg_state.curr_dkg.as_mut() {
 					curr_dkg.try_finish();
 					if curr_dkg.local_key.is_some() {
-						debug!(target: "beefy", "🕸️  DKG keygen round completed");
+						debug!(target: "webb", "🕸️  DKG keygen round completed");
 						self.dkg_state.accepted = true;
 					}
 				}
 			}
 			_ => {
-				warn!(target: "beefy", "🕸️  Received DKG message of unknown type: {:?}", dkg_type);
+				warn!(target: "webb", "🕸️  Received DKG message of unknown type: {:?}", dkg_type);
 				return;
 			}
 		}
@@ -471,7 +471,7 @@ where
 
 		let mut webb_dkg = Box::pin(self.gossip_engine.lock().messages_for(webb_topic::<B>()).filter_map(
 			|notification| async move {
-				// debug!(target: "beefy", "🕸️  Got webb message: {:?}", notification);
+				// debug!(target: "webb", "🕸️  Got message: {:?}", notification);
 
 				DKGMessage::<Public>::decode(&mut &notification.message[..]).ok()
 			},

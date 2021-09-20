@@ -77,14 +77,14 @@ impl MultiPartyECDSASettings {
 
 	pub fn get_outgoing_message(&mut self, id: &Public) -> Option<Vec<Vec<u8>>> {
 		if !self.keygen.message_queue().is_empty() {
-			trace!(target: "beefy", "🕸️ outgoing messages, queue len: {}", self.keygen.message_queue().len());
+			trace!(target: "webb", "🕸️ outgoing messages, queue len: {}", self.keygen.message_queue().len());
 
 			let enc_messages = self
 				.keygen
 				.message_queue()
 				.into_iter()
 				.map(|m| {
-					debug!(target: "beefy", "🕸️ MPC protocol message {:?}", *m);
+					trace!(target: "webb", "🕸️ MPC protocol message {:?}", *m);
 					let m_ser = bincode::serialize(m).unwrap();
 					let dkg_message = DKGMessage {
 						id: id.clone(),
@@ -92,8 +92,8 @@ impl MultiPartyECDSASettings {
 						message: m_ser,
 					};
 					let encoded_dkg_message = dkg_message.encode();
-					trace!(
-						target: "beefy",
+					debug!(
+						target: "webb",
 						"🕸️  DKG Message: {:?}, encoded: {:?}",
 						dkg_message,
 						encoded_dkg_message
@@ -110,64 +110,64 @@ impl MultiPartyECDSASettings {
 
 	pub fn proceed(&mut self) {
 		if self.keygen.wants_to_proceed() {
-			trace!(target: "beefy", "🕸️ Party {} wants to proceed", self.keygen.party_ind());
-			trace!(target: "beefy", "🕸️ before: {:?}", self.keygen);
+			info!(target: "webb", "🕸️ Party {} wants to proceed", self.keygen.party_ind());
+			trace!(target: "webb", "🕸️ before: {:?}", self.keygen);
 			//TODO, handle asynchronously
 			match self.keygen.proceed() {
 				Ok(_) => {
-					trace!(target: "beefy", "🕸️ after: {:?}", self.keygen);
+					trace!(target: "webb", "🕸️ after: {:?}", self.keygen);
 				}
 				Err(err) => {
-					error!(target: "beefy", "🕸️ error encountered during proceed: {:?}", err);
+					error!(target: "webb", "🕸️ error encountered during proceed: {:?}", err);
 				}
 			}
 		}
 	}
 
 	pub fn handle_incoming(&mut self, data: &[u8]) -> Result<(), MPCError> {
-		trace!(target: "beefy", "🕸️ handle incoming message");
+		trace!(target: "webb", "🕸️ handle incoming message");
 		if data.is_empty() {
 			warn!(
-				target: "beefy", "🕸️ got empty message");
+				target: "webb", "🕸️ got empty message");
 			return Ok(());
 		}
 		let msg: Msg<ProtocolMessage> = bincode::deserialize(&data[..]).unwrap();
 		if Some(self.keygen.party_ind()) != msg.receiver
 			&& (msg.receiver.is_some() || msg.sender == self.keygen.party_ind())
 		{
-			warn!(target: "beefy", "🕸️ ignore messages sent by self");
+			warn!(target: "webb", "🕸️ ignore messages sent by self");
 			return Ok(());
 		}
 		trace!(
-			target: "beefy", "🕸️ party {} got message from={}, broadcast={}: {:?}",
+			target: "webb", "🕸️ party {} got message from={}, broadcast={}: {:?}",
 			self.keygen.party_ind(),
 			msg.sender,
 			msg.receiver.is_none(),
 			msg.body,
 		);
-		debug!(target: "beefy", "🕸️ state before incoming message processing: {:?}", self.keygen);
+		debug!(target: "webb", "🕸️ state before incoming message processing: {:?}", self.keygen);
 		match self.keygen.handle_incoming(msg.clone()) {
 			Ok(()) => (),
 			Err(err) if err.is_critical() => {
-				error!(target: "beefy", "🕸️ Critical error encountered: {:?}", err);
+				error!(target: "webb", "🕸️ Critical error encountered: {:?}", err);
 				return Err(MPCError::CryptoOperation(err.to_string()));
 			}
 			Err(err) => {
-				error!(target: "beefy", "🕸️ Non-critical error encountered: {:?}", err);
+				error!(target: "webb", "🕸️ Non-critical error encountered: {:?}", err);
 			}
 		}
-		debug!(target: "beefy", "🕸️ state after incoming message processing: {:?}", self.keygen);
+		debug!(target: "webb", "🕸️ state after incoming message processing: {:?}", self.keygen);
 		Ok(())
 	}
 
 	/// If protocol is successfully completed, `self.local_key` will have valid value after this call.
 	pub fn try_finish(&mut self) {
 		if self.keygen.is_finished() {
-			debug!(target: "beefy", "🕸️ protocol is finished, extracting output");
+			debug!(target: "webb", "🕸️ protocol is finished, extracting output");
 			match self.keygen.pick_output() {
 				Some(Ok(k)) => {
 					self.local_key = Some(k);
-					debug!(target: "beefy", "🕸️ local share key is extracted");
+					debug!(target: "webb", "🕸️ local share key is extracted");
 				}
 				Some(Err(e)) => panic!("protocol finished with error result"),
 				None => panic!("protocol finished with no result"),

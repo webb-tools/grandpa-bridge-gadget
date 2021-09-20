@@ -22,7 +22,7 @@ use sp_core::hashing::twox_64;
 use sp_runtime::traits::{Block, Hash, Header, NumberFor};
 
 use codec::{Decode, Encode};
-use log::{debug, trace};
+use log::{debug, error, trace};
 use parking_lot::{Mutex, RwLock};
 use wasm_timer::Instant;
 
@@ -176,14 +176,14 @@ where
 			}
 		}
 
-		trace!(target: "beefy", "🕸️  Got a message: {:?}, from: {:?}", data_copy, sender);
+		trace!(target: "webb", "🕸️  Got a message: {:?}, from: {:?}", data_copy, sender);
 		match DKGMessage::<Public>::decode(&mut data_copy) {
 			Ok(msg) => {
-				trace!(target: "beefy", "🕸️  Got webb dkg message: {:?}, from: {:?}", msg, sender);
+				trace!(target: "webb", "🕸️  Got webb dkg message: {:?}, from: {:?}", msg, sender);
 				return ValidationResult::ProcessAndDiscard(webb_topic::<B>());
 			}
 			Err(e) => {
-				debug!(target: "beefy", "🕸️  Got invalid webb dkg message: {:?}, from: {:?}", e, sender);
+				error!(target: "webb", "🕸️  Got invalid webb dkg message: {:?}, from: {:?}", e, sender);
 			}
 		}
 
