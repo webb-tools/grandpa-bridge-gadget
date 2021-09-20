@@ -16,6 +16,7 @@
 
 #![allow(clippy::collapsible_match)]
 
+use core::convert::TryFrom;
 use std::{collections::BTreeSet, fmt::Debug, marker::PhantomData, sync::Arc};
 
 use codec::{Codec, Decode, Encode};
@@ -172,17 +173,9 @@ where
 		return None;
 	}
 
-	fn get_threshold(&self, header: &B::Header) -> Option<usize> {
+	fn get_threshold(&self, header: &B::Header) -> Option<u16> {
 		let at = BlockId::hash(header.hash());
-		let thresh = self.client.runtime_api().signature_threshold(&at).ok();
-
-		trace!(target: "webb", "🕸️  active signature threshold: {:?}", thresh);
-
-		if thresh.is_some() {
-			Some(thresh.unwrap() as usize)
-		} else {
-			None
-		}
+		return self.client.runtime_api().signature_threshold(&at).ok();
 	}
 
 	/// Return `true`, if we should vote on block `number`
@@ -364,7 +357,8 @@ where
 				thresh,
 				party_inx,
 			);
-			let curr_dkg = MultiPartyECDSASettings::new(thresh, n, party_inx);
+			let curr_dkg =
+				MultiPartyECDSASettings::new(thresh, u16::try_from(n).unwrap(), u16::try_from(party_inx).unwrap());
 			if curr_dkg.is_err() {
 				panic!("MPC Party creation failed");
 			}

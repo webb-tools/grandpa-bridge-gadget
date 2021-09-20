@@ -474,7 +474,7 @@ impl_runtime_apis! {
 			Beefy::validator_set()
 		}
 
-		fn signature_threshold() -> u32 {
+		fn signature_threshold() -> u16 {
 			Beefy::sig_threshold()
 		}
 	}

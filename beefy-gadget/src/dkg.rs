@@ -54,18 +54,17 @@ pub trait MultiPartyECDSAKeyStore: SyncCryptoStore {
 pub type MultiPartyCryptoStorePtr = Arc<dyn MultiPartyECDSAKeyStore>;
 
 pub struct MultiPartyECDSASettings {
-	pub threshold: usize,
-	pub parties: usize,
+	pub threshold: u16,
+	pub parties: u16,
 	pub accepted: bool,
-	pub party_index: usize,
+	pub party_index: u16,
 	pub keygen: Keygen,
 	pub local_key: Option<LocalKey>,
 }
 
 impl MultiPartyECDSASettings {
-	pub fn new(threshold: usize, parties: usize, party_index: usize) -> Result<Self, MPCError> {
-		// TODO u16 limit(=65k) is good enough, change type to u16?
-		let keygen = Keygen::new(party_index as u16, threshold as u16, parties as u16)?;
+	pub fn new(threshold: u16, parties: u16, party_index: u16) -> Result<Self, MPCError> {
+		let keygen = Keygen::new(party_index, threshold, parties)?;
 		Ok(Self {
 			threshold,
 			parties,
