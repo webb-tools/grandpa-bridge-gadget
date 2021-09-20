@@ -22,7 +22,7 @@ use sp_core::hashing::twox_64;
 use sp_runtime::traits::{Block, Hash, Header, NumberFor};
 
 use codec::{Decode, Encode};
-use log::{debug, trace};
+use log::{debug, error, trace};
 use parking_lot::{Mutex, RwLock};
 use wasm_timer::Instant;
 
@@ -31,7 +31,10 @@ use beefy_primitives::{
 	MmrRootHash, VoteMessage,
 };
 
-use crate::keystore::BeefyKeystore;
+use crate::{
+	dkg::{webb_topic, DKGMessage},
+	keystore::BeefyKeystore,
+};
 
 // Limit BEEFY gossip by keeping only a bound number of voting rounds alive.
 const MAX_LIVE_GOSSIP_ROUNDS: usize = 3;
@@ -144,6 +147,7 @@ where
 		sender: &PeerId,
 		mut data: &[u8],
 	) -> ValidationResult<B::Hash> {
+		let mut data_copy = data; // TODO VoteMessage and DKGMessage can be of same enum type
 		if let Ok(msg) = VoteMessage::<MmrRootHash, NumberFor<B>, Public, Signature>::decode(&mut data) {
 			let msg_hash = twox_64(data);
 			let round = msg.commitment.block_number;
@@ -169,6 +173,17 @@ where
 			} else {
 				// TODO: report peer
 				debug!(target: "beefy", "🥩 Bad signature on message: {:?}, from: {:?}", msg, sender);
+			}
+		}
+
+		trace!(target: "webb", "🕸️  Got a message: {:?}, from: {:?}", data_copy, sender);
+		match DKGMessage::<Public>::decode(&mut data_copy) {
+			Ok(msg) => {
+				trace!(target: "webb", "🕸️  Got webb dkg message: {:?}, from: {:?}", msg, sender);
+				return ValidationResult::ProcessAndKeep(webb_topic::<B>());
+			}
+			Err(e) => {
+				error!(target: "webb", "🕸️  Got invalid webb dkg message: {:?}, from: {:?}", e, sender);
 			}
 		}
 

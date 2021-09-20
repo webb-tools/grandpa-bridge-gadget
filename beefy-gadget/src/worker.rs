@@ -16,6 +16,7 @@
 
 #![allow(clippy::collapsible_match)]
 
+use core::convert::TryFrom;
 use std::{collections::BTreeSet, fmt::Debug, marker::PhantomData, sync::Arc};
 
 use codec::{Codec, Decode, Encode};
@@ -41,7 +42,8 @@ use beefy_primitives::{
 };
 
 use crate::{
-	error,
+	dkg::{webb_topic, DKGMessage, DKGState, DKGType, MultiPartyECDSASettings},
+	error::{self},
 	gossip::{topic, GossipValidator},
 	keystore::BeefyKeystore,
 	metric_inc, metric_set,
@@ -61,6 +63,7 @@ where
 	pub gossip_validator: Arc<GossipValidator<B>>,
 	pub min_block_delta: u32,
 	pub metrics: Option<Metrics>,
+	pub dkg_state: DKGState,
 }
 
 /// A BEEFY worker plays the BEEFY protocol
@@ -89,6 +92,8 @@ where
 	last_signed_id: u64,
 	// keep rustc happy
 	_backend: PhantomData<BE>,
+	// dkg state
+	dkg_state: DKGState,
 }
 
 impl<B, C, BE> BeefyWorker<B, C, BE>
@@ -114,6 +119,7 @@ where
 			gossip_validator,
 			min_block_delta,
 			metrics,
+			dkg_state,
 		} = worker_params;
 
 		BeefyWorker {
@@ -130,6 +136,7 @@ where
 			best_grandpa_block: client.info().finalized_number,
 			best_beefy_block: None,
 			last_signed_id: 0,
+			dkg_state,
 			_backend: PhantomData,
 		}
 	}
@@ -142,6 +149,35 @@ where
 	C: Client<B, BE>,
 	C::Api: BeefyApi<B>,
 {
+	fn get_authority_index(&self, header: &B::Header) -> Option<usize> {
+		let new = if let Some(new) = find_authorities_change::<B>(header) {
+			Some(new)
+		} else {
+			let at = BlockId::hash(header.hash());
+			self.client.runtime_api().validator_set(&at).ok()
+		};
+
+		trace!(target: "webb", "🕸️  active validator set: {:?}", new);
+
+		let set = new.unwrap_or_else(|| panic!("Help"));
+		let public = self
+			.key_store
+			.authority_id(&self.key_store.public_keys().unwrap())
+			.unwrap_or_else(|| panic!("Halp"));
+		for i in 0..set.validators.len() {
+			if set.validators[i] == public {
+				return Some(i);
+			}
+		}
+
+		return None;
+	}
+
+	fn get_threshold(&self, header: &B::Header) -> Option<u16> {
+		let at = BlockId::hash(header.hash());
+		return self.client.runtime_api().signature_threshold(&at).ok();
+	}
+
 	/// Return `true`, if we should vote on block `number`
 	fn should_vote_on(&self, number: NumberFor<B>) -> bool {
 		let best_beefy_block = if let Some(block) = self.best_beefy_block {
@@ -298,6 +334,38 @@ where
 				.lock()
 				.gossip_message(topic::<B>(), encoded_message, false);
 		}
+
+		// if the epoch is not over, continue preparing the DKG or do nothing
+		if !self.dkg_state.is_epoch_over {
+			// if the DKG has not be prepared / terminated, continue preparing it
+			if !self.dkg_state.accepted {
+				self.send_outgoing_dkg_messages();
+			}
+		} else {
+			let party_inx = self.get_authority_index(&notification.header).unwrap() + 1;
+			let thresh = self.get_threshold(&notification.header).unwrap();
+			let n = self.rounds.validators().len();
+
+			if let Some(dkg) = self.dkg_state.curr_dkg.take() {
+				self.dkg_state.past_dkg = Some(dkg);
+			}
+
+			info!(
+				target: "webb",
+				"🕸️  Starting new DKG w/ size {:?}, threshold {:?}, party_index {:?}",
+				n,
+				thresh,
+				party_inx,
+			);
+			let curr_dkg =
+				MultiPartyECDSASettings::new(thresh, u16::try_from(n).unwrap(), u16::try_from(party_inx).unwrap());
+			if curr_dkg.is_err() {
+				panic!("MPC Party creation failed");
+			}
+			self.dkg_state.curr_dkg = curr_dkg.ok();
+			self.send_outgoing_dkg_messages();
+			self.dkg_state.is_epoch_over = !self.dkg_state.is_epoch_over;
+		}
 	}
 
 	fn handle_vote(&mut self, round: (MmrRootHash, NumberFor<B>), vote: (Public, Signature)) {
@@ -346,12 +414,66 @@ where
 		}
 	}
 
+	fn send_outgoing_dkg_messages(&mut self) {
+		debug!(target: "webb", "🕸️ Try sending DKG messages");
+		let authority_id = if let Some(id) = self.key_store.authority_id(self.rounds.validators().as_slice()) {
+			debug!(target: "webb", "🕸️  Local authority id: {:?}", id);
+			id
+		} else {
+			panic!("error");
+		};
+		if let Some(curr_dkg) = self.dkg_state.curr_dkg.as_mut() {
+			curr_dkg.proceed();
+
+			if let Some(outgoing_messages) = curr_dkg.get_outgoing_messages(&authority_id) {
+				for message in &outgoing_messages {
+					self.gossip_engine
+						.lock()
+						.gossip_message(webb_topic::<B>(), message.clone(), true);
+					trace!(target: "webb", "🕸️  Sent DKG Message {:?}", *message);
+				}
+			}
+		}
+	}
+
+	fn process_incoming_dkg_message(&mut self, id: Public, dkg_type: DKGType, message: Vec<u8>) {
+		debug!(target: "webb", "🕸️  Process DKG message id: {:?}, type: {:?}, message: {:?}", id, dkg_type, message);
+		match dkg_type {
+			DKGType::MultiPartyECDSA => {
+				if let Some(curr_dkg) = self.dkg_state.curr_dkg.as_mut() {
+					curr_dkg.handle_incoming(&message);
+					self.send_outgoing_dkg_messages();
+				}
+
+				if let Some(curr_dkg) = self.dkg_state.curr_dkg.as_mut() {
+					curr_dkg.try_finish();
+					if curr_dkg.local_key.is_some() {
+						debug!(target: "webb", "🕸️  DKG keygen round completed");
+						self.dkg_state.accepted = true;
+					}
+				}
+			}
+			_ => {
+				warn!(target: "webb", "🕸️  Received DKG message of unknown type: {:?}", dkg_type);
+				return;
+			}
+		}
+	}
+
 	pub(crate) async fn run(mut self) {
 		let mut votes = Box::pin(self.gossip_engine.lock().messages_for(topic::<B>()).filter_map(
 			|notification| async move {
-				debug!(target: "beefy", "🥩 Got vote message: {:?}", notification);
+				// debug!(target: "beefy", "🥩 Got vote message: {:?}", notification);
 
 				VoteMessage::<MmrRootHash, NumberFor<B>, Public, Signature>::decode(&mut &notification.message[..]).ok()
+			},
+		));
+
+		let mut webb_dkg = Box::pin(self.gossip_engine.lock().messages_for(webb_topic::<B>()).filter_map(
+			|notification| async move {
+				// debug!(target: "webb", "🕸️  Got message: {:?}", notification);
+
+				DKGMessage::<Public>::decode(&mut &notification.message[..]).ok()
 			},
 		));
 
@@ -373,6 +495,13 @@ where
 							(vote.commitment.payload, vote.commitment.block_number),
 							(vote.id, vote.signature),
 						);
+					} else {
+						return;
+					}
+				},
+				dkg_msg = webb_dkg.next().fuse() => {
+					if let Some(dkg_msg) = dkg_msg {
+						self.process_incoming_dkg_message(dkg_msg.id, dkg_msg.dkg_type, dkg_msg.message);
 					} else {
 						return;
 					}

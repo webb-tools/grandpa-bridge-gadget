@@ -31,6 +31,10 @@ sc-network = { git = "https://github.com/paritytech/substrate", branch = "master
 sc-network-gossip = { git = "https://github.com/paritytech/substrate", branch = "master" }
 
 beefy-primitives = { path = "../beefy-primitives" }
+round-based = { version = "0.1.4", features = [] }
+serde = { version = "1.0", features = ["derive"] }
+bincode = "1.2.1"
+multi-party-ecdsa = { git = "https://github.com/ZenGo-X/multi-party-ecdsa.git" }
 
 [dev-dependencies]
 sc-network-test = { git = "https://github.com/paritytech/substrate", branch = "master" }

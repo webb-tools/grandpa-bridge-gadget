@@ -20,6 +20,7 @@ use codec::Encode;
 
 use frame_support::{traits::OneSessionHandler, Parameter};
 
+use core::convert::TryFrom;
 use sp_runtime::{
 	generic::DigestItem,
 	traits::{IsMember, Member},
@@ -56,7 +57,26 @@ pub mod pallet {
 	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {}
 
 	#[pallet::call]
-	impl<T: Config> Pallet<T> {}
+	impl<T: Config> Pallet<T> {
+		#[pallet::weight(0)]
+		pub fn set_threshold(origin: OriginFor<T>, new_threshold: u16) -> DispatchResultWithPostInfo {
+			ensure_root(origin)?;
+			ensure!(
+				usize::from(new_threshold) <= Authorities::<T>::get().len(),
+				Error::<T>::InvalidThreshold
+			);
+			// set the new maintainer
+			SignatureThreshold::<T>::try_mutate(|threshold| {
+				*threshold = new_threshold.clone();
+				Ok(().into())
+			})
+		}
+	}
+
+	/// The current signature threshold (i.e. the `t` in t-of-n)
+	#[pallet::storage]
+	#[pallet::getter(fn signature_threshold)]
+	pub(super) type SignatureThreshold<T: Config> = StorageValue<_, u16, ValueQuery>;
 
 	/// The current authorities set
 	#[pallet::storage]
@@ -76,6 +96,13 @@ pub mod pallet {
 	#[pallet::genesis_config]
 	pub struct GenesisConfig<T: Config> {
 		pub authorities: Vec<T::BeefyId>,
+		pub threshold: u32,
+	}
+
+	#[pallet::error]
+	pub enum Error<T> {
+		/// Invalid threshold
+		InvalidThreshold,
 	}
 
 	#[cfg(feature = "std")]
@@ -83,6 +110,7 @@ pub mod pallet {
 		fn default() -> Self {
 			Self {
 				authorities: Vec::new(),
+				threshold: 0,
 			}
 		}
 	}
@@ -91,6 +119,8 @@ pub mod pallet {
 	impl<T: Config> GenesisBuild<T> for GenesisConfig<T> {
 		fn build(&self) {
 			Pallet::<T>::initialize_authorities(&self.authorities);
+			let sig_threshold = u16::try_from(self.authorities.len() / 2).unwrap() + 1;
+			SignatureThreshold::<T>::put(sig_threshold);
 		}
 	}
 }
@@ -102,6 +132,10 @@ impl<T: Config> Pallet<T> {
 			validators: Self::authorities(),
 			id: Self::validator_set_id(),
 		}
+	}
+
+	pub fn sig_threshold() -> u16 {
+		Self::signature_threshold()
 	}
 
 	fn change_authorities(new: Vec<T::BeefyId>, queued: Vec<T::BeefyId>) {

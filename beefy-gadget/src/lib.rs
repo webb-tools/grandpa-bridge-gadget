@@ -16,6 +16,7 @@
 
 use std::sync::Arc;
 
+use dkg::DKGState;
 use log::debug;
 use prometheus::Registry;
 
@@ -36,6 +37,7 @@ mod metrics;
 mod round;
 mod worker;
 
+pub mod dkg;
 pub mod notification;
 
 pub const BEEFY_PROTOCOL_NAME: &str = "/paritytech/beefy/1";
@@ -142,6 +144,12 @@ where
 		gossip_validator,
 		min_block_delta,
 		metrics,
+		dkg_state: DKGState {
+			accepted: false,
+			is_epoch_over: true,
+			curr_dkg: None,
+			past_dkg: None,
+		},
 	};
 
 	let worker = worker::BeefyWorker::<_, _, _>::new(worker_params);
