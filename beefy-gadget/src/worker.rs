@@ -360,6 +360,7 @@ where
 			let curr_dkg =
 				MultiPartyECDSASettings::new(thresh, u16::try_from(n).unwrap(), u16::try_from(party_inx).unwrap());
 			if curr_dkg.is_err() {
+				// TODO: Proper error handling
 				panic!("MPC Party creation failed");
 			}
 			self.dkg_state.curr_dkg = curr_dkg.ok();
