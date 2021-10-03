@@ -358,7 +358,7 @@ where
 				party_inx,
 			);
 			let curr_dkg =
-				MultiPartyECDSASettings::new(thresh, u16::try_from(n).unwrap(), u16::try_from(party_inx).unwrap());
+				MultiPartyECDSASettings::new(u16::try_from(party_inx).unwrap(), thresh, u16::try_from(n).unwrap());
 			if curr_dkg.is_err() {
 				// TODO: Proper error handling
 				panic!("MPC Party creation failed");

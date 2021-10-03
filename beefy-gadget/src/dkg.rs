@@ -3,10 +3,10 @@ use codec::{Decode, Encode};
 use log::{debug, error, info, trace, warn};
 use round_based::{IsCritical, Msg, StateMachine};
 use sp_keystore::{Error, SyncCryptoStore};
-use sp_runtime::traits::{Block, Hash, Header, NumberFor};
+use sp_runtime::traits::{Block, Hash, Header};
 use std::sync::Arc;
 
-pub use multi_party_ecdsa::protocols::multi_party_ecdsa::gg_2020::{party_i::*, state_machine::keygen::*};
+pub use multi_party_ecdsa::protocols::multi_party_ecdsa::gg_2020::{party_i::*, state_machine::keygen::*, state_machine::sign::*};
 
 use crate::error::MPCError;
 use beefy_primitives::crypto::Public;
@@ -53,29 +53,93 @@ pub trait MultiPartyECDSAKeyStore: SyncCryptoStore {
 /// A pointer to a keystore.
 pub type MultiPartyCryptoStorePtr = Arc<dyn MultiPartyECDSAKeyStore>;
 
+enum Stage {
+	Keygen,
+	Offline,
+	ManualReady,
+	ManualProcessing,
+}
+
 pub struct MultiPartyECDSASettings {
+	pub party_index: u16,
 	pub threshold: u16,
 	pub parties: u16,
-	pub accepted: bool,
-	pub party_index: u16,
+
+	pub signers: Vec<usize>,
+
+	stage: Stage,
+
+	// Key generation
 	pub keygen: Keygen,
 	pub local_key: Option<LocalKey>,
+
+	// Signing offline stage
+	pub offline_stage: Option<OfflineStage>,
+	pub completed_offline_stage: Option<CompletedOfflineStage>,
+
+	// Message signing
+	pub sing_manual: Option<SignManual>,
 }
 
 impl MultiPartyECDSASettings {
-	pub fn new(threshold: u16, parties: u16, party_index: u16) -> Result<Self, MPCError> {
+	pub fn new(party_index: u16, threshold: u16, parties: u16) -> Result<Self, MPCError> {
 		let keygen = Keygen::new(party_index, threshold, parties)?;
 		Ok(Self {
+			party_index,
 			threshold,
 			parties,
-			party_index,
-			accepted: false,
+			signers: (1..=usize::from(threshold)).collect(),
+			stage: Stage::Keygen,
 			keygen,
 			local_key: None,
+			offline_stage: None,
+			completed_offline_stage: None,
+			sing_manual: None,
 		})
 	}
 
+	/// Public ///
+
 	pub fn get_outgoing_messages(&mut self, id: &Public) -> Option<Vec<Vec<u8>>> {
+		match self.stage {
+			Stage::Keygen => self.get_outgoing_messages_keygen(id),
+			_ => None
+		}
+	}
+
+	pub fn proceed(&mut self) {
+		match self.stage {
+			Stage::Keygen => self.proceed_keygen(),
+			_ => return,
+		}
+	}
+
+	pub fn handle_incoming(&mut self, data: &[u8]) -> Result<(), MPCError> {
+		match self.stage {
+			Stage::Keygen => self.handle_incoming_keygen(data),
+			_ => Ok(()),
+		}
+	}
+
+	pub fn try_finish(&mut self) {
+		match self.stage {
+			Stage::Keygen => self.try_finish_keygen(),
+			_ => return,
+		}
+	}
+
+	pub fn is_ready_to_sing(self) -> bool {
+		match self.stage {
+			Stage::ManualReady => true,
+			_ => false,
+		}
+	}
+
+	/// Internal ///
+
+	/// Get outgoing messages for current Stage
+
+	fn get_outgoing_messages_keygen(&mut self, id: &Public) -> Option<Vec<Vec<u8>>> {
 		if !self.keygen.message_queue().is_empty() {
 			trace!(target: "webb", "🕸️ outgoing messages, queue len: {}", self.keygen.message_queue().len());
 
@@ -108,7 +172,9 @@ impl MultiPartyECDSASettings {
 		None
 	}
 
-	pub fn proceed(&mut self) {
+	/// Proceed to next step for current Stage
+
+	fn proceed_keygen(&mut self) {
 		if self.keygen.wants_to_proceed() {
 			info!(target: "webb", "🕸️ Party {} wants to proceed", self.keygen.party_ind());
 			trace!(target: "webb", "🕸️ before: {:?}", self.keygen);
@@ -124,7 +190,9 @@ impl MultiPartyECDSASettings {
 		}
 	}
 
-	pub fn handle_incoming(&mut self, data: &[u8]) -> Result<(), MPCError> {
+	/// Handle incoming messages for current Stage
+
+	fn handle_incoming_keygen(&mut self, data: &[u8]) -> Result<(), MPCError> {
 		trace!(target: "webb", "🕸️ handle incoming message");
 		if data.is_empty() {
 			warn!(
@@ -159,9 +227,10 @@ impl MultiPartyECDSASettings {
 		debug!(target: "webb", "🕸️ state after incoming message processing: {:?}", self.keygen);
 		Ok(())
 	}
+	
+	/// Try finish current Stage
 
-	/// If protocol is successfully completed, `self.local_key` will have valid value after this call.
-	pub fn try_finish(&mut self) {
+	fn try_finish_keygen(&mut self) {
 		if self.keygen.is_finished() {
 			info!(target: "webb", "🕸️ protocol is finished, extracting output");
 			match self.keygen.pick_output() {
@@ -169,7 +238,7 @@ impl MultiPartyECDSASettings {
 					self.local_key = Some(k);
 					info!(target: "webb", "🕸️ local share key is extracted");
 				}
-				Some(Err(e)) => panic!("protocol finished with error result"),
+				Some(Err(_e)) => panic!("protocol finished with error result"),
 				None => panic!("protocol finished with no result"),
 			}
 		}
