@@ -6,10 +6,12 @@ use sp_keystore::{Error, SyncCryptoStore};
 use sp_runtime::traits::{Block, Hash, Header};
 use std::sync::Arc;
 
-pub use multi_party_ecdsa::protocols::multi_party_ecdsa::gg_2020::{party_i::*, state_machine::keygen::*, state_machine::sign::*};
+pub use multi_party_ecdsa::protocols::multi_party_ecdsa::gg_2020::{
+	party_i::*,
+	state_machine::{keygen::*, sign::*},
+};
 
 use crate::error::MPCError;
-use beefy_primitives::crypto::Public;
 
 #[derive(Debug, Decode, Encode)]
 #[cfg_attr(feature = "scale-info", derive(scale_info::TypeInfo))]
@@ -53,11 +55,25 @@ pub trait MultiPartyECDSAKeyStore: SyncCryptoStore {
 /// A pointer to a keystore.
 pub type MultiPartyCryptoStorePtr = Arc<dyn MultiPartyECDSAKeyStore>;
 
+#[derive(Clone, Copy)]
 enum Stage {
 	Keygen,
 	Offline,
 	ManualReady,
 	ManualProcessing,
+	SignatureReady,
+}
+
+impl Stage {
+	fn get_next(self) -> Stage {
+		match self {
+			Stage::Keygen => Stage::Offline,
+			Stage::Offline => Stage::ManualReady,
+			Stage::ManualReady => Stage::ManualProcessing,
+			Stage::ManualProcessing => Stage::SignatureReady,
+			Stage::SignatureReady => Stage::ManualReady,
+		}
+	}
 }
 
 pub struct MultiPartyECDSASettings {
@@ -100,16 +116,18 @@ impl MultiPartyECDSASettings {
 
 	/// Public ///
 
-	pub fn get_outgoing_messages(&mut self, id: &Public) -> Option<Vec<Vec<u8>>> {
+	pub fn get_outgoing_messages(&mut self) -> Option<Vec<Vec<u8>>> {
 		match self.stage {
-			Stage::Keygen => self.get_outgoing_messages_keygen(id),
-			_ => None
+			Stage::Keygen => self.get_outgoing_messages_keygen(),
+			Stage::Offline => self.get_outgoing_messages_offline_stage(),
+			_ => None,
 		}
 	}
 
 	pub fn proceed(&mut self) {
 		match self.stage {
 			Stage::Keygen => self.proceed_keygen(),
+			Stage::Offline => self.proceed_offline_stage(),
 			_ => return,
 		}
 	}
@@ -117,14 +135,20 @@ impl MultiPartyECDSASettings {
 	pub fn handle_incoming(&mut self, data: &[u8]) -> Result<(), MPCError> {
 		match self.stage {
 			Stage::Keygen => self.handle_incoming_keygen(data),
+			Stage::Offline => self.handle_incoming_offline_stage(data),
 			_ => Ok(()),
 		}
 	}
 
 	pub fn try_finish(&mut self) {
-		match self.stage {
+		let finished = match self.stage {
 			Stage::Keygen => self.try_finish_keygen(),
-			_ => return,
+			Stage::Offline => self.try_finish_offline_stage(),
+			_ => false,
+		};
+
+		if finished {
+			self.advance_stage();
 		}
 	}
 
@@ -137,9 +161,24 @@ impl MultiPartyECDSASettings {
 
 	/// Internal ///
 
+	fn advance_stage(&mut self) {
+		self.stage = self.stage.get_next();
+
+		match self.stage {
+			Stage::Offline => {
+				let local_key_clone = self.local_key.clone().unwrap();
+
+				// TODO(temld4): maybe make manual stage advance
+				self.offline_stage =
+					Some(OfflineStage::new(self.party_index, (1..=self.parties).collect(), local_key_clone).unwrap());
+			}
+			_ => (),
+		}
+	}
+
 	/// Get outgoing messages for current Stage
 
-	fn get_outgoing_messages_keygen(&mut self, id: &Public) -> Option<Vec<Vec<u8>>> {
+	fn get_outgoing_messages_keygen(&mut self) -> Option<Vec<Vec<u8>>> {
 		if !self.keygen.message_queue().is_empty() {
 			trace!(target: "webb", "🕸️ outgoing messages, queue len: {}", self.keygen.message_queue().len());
 
@@ -150,19 +189,7 @@ impl MultiPartyECDSASettings {
 				.map(|m| {
 					trace!(target: "webb", "🕸️ MPC protocol message {:?}", *m);
 					let m_ser = bincode::serialize(m).unwrap();
-					let dkg_message = DKGMessage {
-						id: id.clone(),
-						dkg_type: DKGType::MultiPartyECDSA,
-						message: m_ser,
-					};
-					let encoded_dkg_message = dkg_message.encode();
-					debug!(
-						target: "webb",
-						"🕸️  DKG Message: {:?}, encoded: {:?}",
-						dkg_message,
-						encoded_dkg_message
-					);
-					encoded_dkg_message
+					m_ser
 				})
 				.collect::<Vec<Vec<u8>>>();
 
@@ -172,16 +199,66 @@ impl MultiPartyECDSASettings {
 		None
 	}
 
+	fn get_outgoing_messages_offline_stage(&mut self) -> Option<Vec<Vec<u8>>> {
+		let offline_stage = self.offline_stage.as_mut().unwrap();
+
+		if !offline_stage.message_queue().is_empty() {
+			trace!(target: "webb", "🕸️ outgoing messages, queue len: {}", offline_stage.message_queue().len());
+
+			let enc_messages = offline_stage
+				.message_queue()
+				.into_iter()
+				.map(|m| {
+					trace!(target: "webb", "🕸️ MPC protocol message {:?}", *m);
+					let m_ser = bincode::serialize(m).unwrap();
+					m_ser
+				})
+				.collect::<Vec<Vec<u8>>>();
+
+			offline_stage.message_queue().clear();
+			return Some(enc_messages);
+		}
+		None
+	}
+
 	/// Proceed to next step for current Stage
 
 	fn proceed_keygen(&mut self) {
 		if self.keygen.wants_to_proceed() {
-			info!(target: "webb", "🕸️ Party {} wants to proceed", self.keygen.party_ind());
+			info!(target: "webb", "🕸️ Keygen party {} wants to proceed", self.keygen.party_ind());
 			trace!(target: "webb", "🕸️ before: {:?}", self.keygen);
 			//TODO, handle asynchronously
 			match self.keygen.proceed() {
 				Ok(_) => {
 					trace!(target: "webb", "🕸️ after: {:?}", self.keygen);
+					println!(
+						"Party: {}, Keygen round: {}",
+						self.party_index,
+						self.keygen.current_round()
+					)
+				}
+				Err(err) => {
+					error!(target: "webb", "🕸️ error encountered during proceed: {:?}", err);
+				}
+			}
+		}
+	}
+
+	fn proceed_offline_stage(&mut self) {
+		let offline_stage = self.offline_stage.as_mut().unwrap();
+
+		if offline_stage.wants_to_proceed() {
+			info!(target: "webb", "🕸️ OfflineStage party {} wants to proceed", offline_stage.party_ind());
+			trace!(target: "webb", "🕸️ before: {:?}", offline_stage);
+			//TODO, handle asynchronously
+			match offline_stage.proceed() {
+				Ok(_) => {
+					trace!(target: "webb", "🕸️ after: {:?}", offline_stage);
+					println!(
+						"Party: {}, OfflineStage round: {}",
+						self.party_index,
+						offline_stage.current_round()
+					)
 				}
 				Err(err) => {
 					error!(target: "webb", "🕸️ error encountered during proceed: {:?}", err);
@@ -204,7 +281,7 @@ impl MultiPartyECDSASettings {
 			Err(err) => {
 				error!(target: "webb", "🕸️ Error deserializing msg: {:?}", err);
 				panic!("🕸️ Error deserializing msg: {:?}", err)
-			},
+			}
 		};
 
 		if Some(self.keygen.party_ind()) != msg.receiver
@@ -234,21 +311,86 @@ impl MultiPartyECDSASettings {
 		debug!(target: "webb", "🕸️ state after incoming message processing: {:?}", self.keygen);
 		Ok(())
 	}
-	
+
+	fn handle_incoming_offline_stage(&mut self, data: &[u8]) -> Result<(), MPCError> {
+		let offline_stage = self.offline_stage.as_mut().unwrap();
+
+		trace!(target: "webb", "🕸️ handle incoming message");
+		if data.is_empty() {
+			warn!(
+				target: "webb", "🕸️ got empty message");
+			return Ok(());
+		}
+		let msg: Msg<OfflineProtocolMessage> = match bincode::deserialize(&data[..]) {
+			Ok(msg) => msg,
+			Err(err) => {
+				error!(target: "webb", "🕸️ Error deserializing msg: {:?}", err);
+				panic!("🕸️ Error deserializing msg: {:?}", err)
+			}
+		};
+
+		if Some(offline_stage.party_ind()) != msg.receiver
+			&& (msg.receiver.is_some() || msg.sender == offline_stage.party_ind())
+		{
+			warn!(target: "webb", "🕸️ ignore messages sent by self");
+			return Ok(());
+		}
+		trace!(
+			target: "webb", "🕸️ party {} got message from={}, broadcast={}: {:?}",
+			offline_stage.party_ind(),
+			msg.sender,
+			msg.receiver.is_none(),
+			msg.body,
+		);
+		debug!(target: "webb", "🕸️ state before incoming message processing: {:?}", offline_stage);
+		match offline_stage.handle_incoming(msg.clone()) {
+			Ok(()) => (),
+			Err(err) if err.is_critical() => {
+				error!(target: "webb", "🕸️ Critical error encountered: {:?}", err);
+				return Err(MPCError::CryptoOperation(err.to_string()));
+			}
+			Err(err) => {
+				error!(target: "webb", "🕸️ Non-critical error encountered: {:?}", err);
+			}
+		}
+		debug!(target: "webb", "🕸️ state after incoming message processing: {:?}", offline_stage);
+		Ok(())
+	}
+
 	/// Try finish current Stage
 
-	fn try_finish_keygen(&mut self) {
+	fn try_finish_keygen(&mut self) -> bool {
 		if self.keygen.is_finished() {
-			info!(target: "webb", "🕸️ protocol is finished, extracting output");
+			info!(target: "webb", "🕸️ Keygen is finished, extracting output");
 			match self.keygen.pick_output() {
 				Some(Ok(k)) => {
 					self.local_key = Some(k);
 					info!(target: "webb", "🕸️ local share key is extracted");
+					return true;
 				}
-				Some(Err(_e)) => panic!("protocol finished with error result"),
-				None => panic!("protocol finished with no result"),
+				Some(Err(e)) => panic!("Keygen finished with error result {}", e),
+				None => panic!("Keygen finished with no result"),
 			}
 		}
+		return false;
+	}
+
+	fn try_finish_offline_stage(&mut self) -> bool {
+		let offline_stage = self.offline_stage.as_mut().unwrap();
+
+		if offline_stage.is_finished() {
+			info!(target: "webb", "🕸️ OfflineStage is finished, extracting output");
+			match offline_stage.pick_output() {
+				Some(Ok(cos)) => {
+					self.completed_offline_stage = Some(cos);
+					info!(target: "webb", "🕸️ CompletedOfflineStage is extracted");
+					return true;
+				}
+				Some(Err(e)) => panic!("OfflineStage finished with error result {}", e),
+				None => panic!("OfflineStage finished with no result"),
+			}
+		}
+		return false;
 	}
 }
 
@@ -261,14 +403,17 @@ pub struct DKGState {
 
 #[cfg(test)]
 mod tests {
-	use beefy_test::Keyring;
-	use log::info;
-	use super::{Stage, MultiPartyECDSASettings};
+	use super::{MultiPartyECDSASettings, Stage};
 
 	fn check_all_finished(parties: &mut Vec<MultiPartyECDSASettings>) -> bool {
 		for party in &mut parties.into_iter() {
 			match party.stage {
-				Stage::Offline => continue,
+				Stage::ManualReady => {
+					if let Some(_cos) = party.completed_offline_stage.clone() {
+						continue;
+					}
+					panic!("No offline stage output for party {}", party.party_index);
+				}
 				_ => return false,
 			}
 		}
@@ -276,71 +421,75 @@ mod tests {
 	}
 
 	fn run_simulation(parties: &mut Vec<MultiPartyECDSASettings>) {
+		println!("Simulation starts");
 
-        info!("Simulation starts");
+		let mut msgs_pull = vec![];
 
-		let dummy_id = Keyring::Alice.public(); 
-
-        let mut msgs_pull = vec![];
-
-        for party in &mut parties.into_iter() {
+		for party in &mut parties.into_iter() {
 			party.proceed();
 
-			if let Some(mut msgs) = party.get_outgoing_messages(&dummy_id.clone()) {
+			if let Some(mut msgs) = party.get_outgoing_messages() {
 				msgs_pull.append(&mut msgs);
 			}
-        }
+		}
 
 		for party in &mut parties.into_iter() {
 			party.try_finish();
-        }
+		}
 
-        loop {
-            let msgs_pull_frozen = msgs_pull.split_off(0);
+		for _i in 1..100 {
+			let msgs_pull_frozen = msgs_pull.split_off(0);
 
 			for party in &mut parties.into_iter() {
 				party.try_finish();
 			}
 
-            for party in &mut parties.into_iter() {
+			for party in &mut parties.into_iter() {
 				for msg_frozen in &msgs_pull_frozen {
- 					match party.handle_incoming(&msg_frozen) {
-						 Ok(()) => (),
-						 Err(_err) => (),
-					 }
+					match party.handle_incoming(&msg_frozen) {
+						Ok(()) => (),
+						Err(_err) => (),
+					}
 				}
-
-				if let Some(mut msgs) = party.get_outgoing_messages(&dummy_id.clone()) {
+				if let Some(mut msgs) = party.get_outgoing_messages() {
 					msgs_pull.append(&mut msgs);
 				}
-            }
+			}
 
-            for party in &mut parties.into_iter() {
+			for party in &mut parties.into_iter() {
 				party.proceed();
 
-				if let Some(mut msgs) = party.get_outgoing_messages(&dummy_id.clone()) {
+				if let Some(mut msgs) = party.get_outgoing_messages() {
 					msgs_pull.append(&mut msgs);
 				}
-            }
+			}
 
-            if check_all_finished(parties) {
-                return;
-            }
-        }
+			if check_all_finished(parties) {
+				println!("All parties finished");
+				return;
+			}
+		}
+
+		panic!("Test failed")
 	}
 
-    fn simulate_multi_party(t: u16, n: u16) {
+	fn simulate_multi_party(t: u16, n: u16) {
 		let mut parties: Vec<MultiPartyECDSASettings> = vec![];
 
 		for i in 1..=n {
 			parties.push(MultiPartyECDSASettings::new(i, t, n).unwrap());
 		}
-        
+
 		run_simulation(&mut parties);
-    }
+	}
 
 	#[test]
-    fn simulate_multi_party_t2_n3() {
+	fn simulate_multi_party_t2_n3() {
+		simulate_multi_party(2, 3);
+	}
+
+	#[test]
+	fn simulate_multi_party_t99_n100() {
 		simulate_multi_party(2, 3);
 	}
 }

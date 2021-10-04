@@ -426,8 +426,21 @@ where
 		if let Some(curr_dkg) = self.dkg_state.curr_dkg.as_mut() {
 			curr_dkg.proceed();
 
-			if let Some(outgoing_messages) = curr_dkg.get_outgoing_messages(&authority_id) {
+			if let Some(outgoing_messages) = curr_dkg.get_outgoing_messages() {
 				for message in &outgoing_messages {
+					let dkg_message = DKGMessage {
+						id: authority_id.clone(),
+						dkg_type: DKGType::MultiPartyECDSA,
+						message: message.to_owned(),
+					};
+					let encoded_dkg_message = dkg_message.encode();
+					debug!(
+						target: "webb",
+						"🕸️  DKG Message: {:?}, encoded: {:?}",
+						dkg_message,
+						encoded_dkg_message
+					);
+
 					self.gossip_engine
 						.lock()
 						.gossip_message(webb_topic::<B>(), message.clone(), true);
