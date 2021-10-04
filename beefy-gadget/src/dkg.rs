@@ -199,7 +199,14 @@ impl MultiPartyECDSASettings {
 				target: "webb", "🕸️ got empty message");
 			return Ok(());
 		}
-		let msg: Msg<ProtocolMessage> = bincode::deserialize(&data[..]).unwrap();
+		let msg: Msg<ProtocolMessage> = match bincode::deserialize(&data[..]) {
+			Ok(msg) => msg,
+			Err(err) => {
+				error!(target: "webb", "🕸️ Error deserializing msg: {:?}", err);
+				panic!("🕸️ Error deserializing msg: {:?}", err)
+			},
+		};
+
 		if Some(self.keygen.party_ind()) != msg.receiver
 			&& (msg.receiver.is_some() || msg.sender == self.keygen.party_ind())
 		{
@@ -244,9 +251,96 @@ impl MultiPartyECDSASettings {
 		}
 	}
 }
+
 pub struct DKGState {
 	pub accepted: bool,
 	pub is_epoch_over: bool,
 	pub curr_dkg: Option<MultiPartyECDSASettings>,
 	pub past_dkg: Option<MultiPartyECDSASettings>,
+}
+
+#[cfg(test)]
+mod tests {
+	use beefy_test::Keyring;
+	use log::info;
+	use super::{Stage, MultiPartyECDSASettings};
+
+	fn check_all_finished(parties: &mut Vec<MultiPartyECDSASettings>) -> bool {
+		for party in &mut parties.into_iter() {
+			match party.stage {
+				Stage::Offline => continue,
+				_ => return false,
+			}
+		}
+		true
+	}
+
+	fn run_simulation(parties: &mut Vec<MultiPartyECDSASettings>) {
+
+        info!("Simulation starts");
+
+		let dummy_id = Keyring::Alice.public(); 
+
+        let mut msgs_pull = vec![];
+
+        for party in &mut parties.into_iter() {
+			party.proceed();
+
+			if let Some(mut msgs) = party.get_outgoing_messages(&dummy_id.clone()) {
+				msgs_pull.append(&mut msgs);
+			}
+        }
+
+		for party in &mut parties.into_iter() {
+			party.try_finish();
+        }
+
+        loop {
+            let msgs_pull_frozen = msgs_pull.split_off(0);
+
+			for party in &mut parties.into_iter() {
+				party.try_finish();
+			}
+
+            for party in &mut parties.into_iter() {
+				for msg_frozen in &msgs_pull_frozen {
+ 					match party.handle_incoming(&msg_frozen) {
+						 Ok(()) => (),
+						 Err(_err) => (),
+					 }
+				}
+
+				if let Some(mut msgs) = party.get_outgoing_messages(&dummy_id.clone()) {
+					msgs_pull.append(&mut msgs);
+				}
+            }
+
+            for party in &mut parties.into_iter() {
+				party.proceed();
+
+				if let Some(mut msgs) = party.get_outgoing_messages(&dummy_id.clone()) {
+					msgs_pull.append(&mut msgs);
+				}
+            }
+
+            if check_all_finished(parties) {
+                return;
+            }
+        }
+	}
+
+    fn simulate_multi_party(t: u16, n: u16) {
+		let mut parties: Vec<MultiPartyECDSASettings> = vec![];
+
+		for i in 1..=n {
+			parties.push(MultiPartyECDSASettings::new(i, t, n).unwrap());
+		}
+        
+		run_simulation(&mut parties);
+    }
+
+	#[test]
+    fn simulate_multi_party_t2_n3() {
+		simulate_multi_party(2, 3);
+	}
 }
