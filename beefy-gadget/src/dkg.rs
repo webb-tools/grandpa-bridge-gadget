@@ -1,5 +1,10 @@
 use bincode;
 use codec::{Decode, Encode};
+use curv::{
+	arithmetic::Converter,
+	cryptographic_primitives::hashing::{hash_sha256::HSha256, traits::Hash as CurvHash},
+	BigInt,
+};
 use log::{debug, error, info, trace, warn};
 use round_based::{IsCritical, Msg, StateMachine};
 use sp_keystore::{Error, SyncCryptoStore};
@@ -55,7 +60,7 @@ pub trait MultiPartyECDSAKeyStore: SyncCryptoStore {
 /// A pointer to a keystore.
 pub type MultiPartyCryptoStorePtr = Arc<dyn MultiPartyECDSAKeyStore>;
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 enum Stage {
 	Keygen,
 	Offline,
@@ -94,7 +99,10 @@ pub struct MultiPartyECDSASettings {
 	pub completed_offline_stage: Option<CompletedOfflineStage>,
 
 	// Message signing
-	pub sing_manual: Option<SignManual>,
+	pub sign_manual: Option<SignManual>,
+	sign_outgoing_msg_q: Vec<Msg<PartialSignature>>,
+	sign_incoming_msg_q: Vec<Msg<PartialSignature>>,
+	pub signature: Option<SignatureRecid>,
 }
 
 impl MultiPartyECDSASettings {
@@ -110,7 +118,10 @@ impl MultiPartyECDSASettings {
 			local_key: None,
 			offline_stage: None,
 			completed_offline_stage: None,
-			sing_manual: None,
+			sign_manual: None,
+			sign_outgoing_msg_q: vec![],
+			sign_incoming_msg_q: vec![],
+			signature: None,
 		})
 	}
 
@@ -120,6 +131,7 @@ impl MultiPartyECDSASettings {
 		match self.stage {
 			Stage::Keygen => self.get_outgoing_messages_keygen(),
 			Stage::Offline => self.get_outgoing_messages_offline_stage(),
+			Stage::ManualProcessing => self.get_outgoing_messages_sign_manual(),
 			_ => None,
 		}
 	}
@@ -128,6 +140,7 @@ impl MultiPartyECDSASettings {
 		match self.stage {
 			Stage::Keygen => self.proceed_keygen(),
 			Stage::Offline => self.proceed_offline_stage(),
+			Stage::ManualProcessing => self.proceed_sign_manual(),
 			_ => return,
 		}
 	}
@@ -136,6 +149,7 @@ impl MultiPartyECDSASettings {
 		match self.stage {
 			Stage::Keygen => self.handle_incoming_keygen(data),
 			Stage::Offline => self.handle_incoming_offline_stage(data),
+			Stage::ManualProcessing => self.handle_incoming_sign_manual(data),
 			_ => Ok(()),
 		}
 	}
@@ -144,11 +158,36 @@ impl MultiPartyECDSASettings {
 		let finished = match self.stage {
 			Stage::Keygen => self.try_finish_keygen(),
 			Stage::Offline => self.try_finish_offline_stage(),
+			Stage::ManualProcessing => self.try_finish_sign_manual(),
 			_ => false,
 		};
 
 		if finished {
 			self.advance_stage();
+		}
+	}
+
+	pub fn try_sign(&mut self, message: &[u8]) -> Result<(), String> {
+		match self.stage {
+			Stage::ManualReady => {
+				let message = HSha256::create_hash(&[&BigInt::from_bytes(message)]);
+				let (sign_manual, partial_sig) =
+					SignManual::new(message.clone(), self.completed_offline_stage.clone().unwrap()).unwrap();
+
+				self.sign_manual = Some(sign_manual);
+
+				let protocol_msg = Msg {
+					sender: self.party_index,
+					receiver: None,
+					body: partial_sig,
+				};
+				self.sign_outgoing_msg_q.push(protocol_msg);
+
+				self.advance_stage();
+
+				Ok(())
+			}
+			_ => Err("Current stage is not ManualReady".to_string()),
 		}
 	}
 
@@ -221,6 +260,27 @@ impl MultiPartyECDSASettings {
 		None
 	}
 
+	fn get_outgoing_messages_sign_manual(&mut self) -> Option<Vec<Vec<u8>>> {
+		if !self.sign_outgoing_msg_q.is_empty() {
+			trace!(target: "webb", "🕸️ outgoing messages, queue len: {}", self.sign_outgoing_msg_q.len());
+
+			let enc_messages = self
+				.sign_outgoing_msg_q
+				.as_mut_slice()
+				.into_iter()
+				.map(|m| {
+					trace!(target: "webb", "🕸️ MPC protocol message {:?}", &m);
+					let m_ser = bincode::serialize(&m).unwrap();
+					m_ser
+				})
+				.collect::<Vec<Vec<u8>>>();
+
+			self.sign_outgoing_msg_q.clear();
+			return Some(enc_messages);
+		}
+		None
+	}
+
 	/// Proceed to next step for current Stage
 
 	fn proceed_keygen(&mut self) {
@@ -231,11 +291,6 @@ impl MultiPartyECDSASettings {
 			match self.keygen.proceed() {
 				Ok(_) => {
 					trace!(target: "webb", "🕸️ after: {:?}", self.keygen);
-					println!(
-						"Party: {}, Keygen round: {}",
-						self.party_index,
-						self.keygen.current_round()
-					)
 				}
 				Err(err) => {
 					error!(target: "webb", "🕸️ error encountered during proceed: {:?}", err);
@@ -254,15 +309,27 @@ impl MultiPartyECDSASettings {
 			match offline_stage.proceed() {
 				Ok(_) => {
 					trace!(target: "webb", "🕸️ after: {:?}", offline_stage);
-					println!(
-						"Party: {}, OfflineStage round: {}",
-						self.party_index,
-						offline_stage.current_round()
-					)
 				}
 				Err(err) => {
 					error!(target: "webb", "🕸️ error encountered during proceed: {:?}", err);
 				}
+			}
+		}
+	}
+
+	fn proceed_sign_manual(&mut self) {
+		if self.signature.is_none() && self.sign_incoming_msg_q.len() >= self.threshold.into() {
+			let sign_manual = std::mem::replace(&mut self.sign_manual, None).unwrap();
+
+			let partial_sigs: Vec<PartialSignature> =
+				self.sign_incoming_msg_q.iter().map(|msg| msg.body.clone()).collect();
+
+			match sign_manual.complete(&partial_sigs) {
+				Ok(sig) => {
+					debug!("Obtained complete signature: {}", &sig.recid);
+					self.signature = Some(sig);
+				}
+				Err(err) => error!("Error signing: {:?}", &err),
 			}
 		}
 	}
@@ -357,6 +424,38 @@ impl MultiPartyECDSASettings {
 		Ok(())
 	}
 
+	fn handle_incoming_sign_manual(&mut self, data: &[u8]) -> Result<(), MPCError> {
+		trace!(target: "webb", "🕸️ handle incoming message");
+		if data.is_empty() {
+			warn!(
+				target: "webb", "🕸️ got empty message");
+			return Ok(());
+		}
+		let msg: Msg<PartialSignature> = match bincode::deserialize(&data[..]) {
+			Ok(msg) => msg,
+			Err(err) => {
+				error!(target: "webb", "🕸️ Error deserializing msg: {:?}", err);
+				panic!("🕸️ Error deserializing msg: {:?}", err)
+			}
+		};
+
+		if Some(self.party_index) != msg.receiver && (msg.receiver.is_some() || msg.sender == self.party_index) {
+			warn!(target: "webb", "🕸️ ignore messages sent by self");
+			return Ok(());
+		}
+		trace!(
+			target: "webb", "🕸️ party {} got message from={}, broadcast={}: {:?}",
+			self.party_index,
+			msg.sender,
+			msg.receiver.is_none(),
+			msg.body,
+		);
+
+		self.sign_incoming_msg_q.push(msg);
+
+		Ok(())
+	}
+
 	/// Try finish current Stage
 
 	fn try_finish_keygen(&mut self) -> bool {
@@ -392,6 +491,15 @@ impl MultiPartyECDSASettings {
 		}
 		return false;
 	}
+
+	fn try_finish_sign_manual(&mut self) -> bool {
+		if let Some(_sig) = &self.signature {
+			info!(target: "webb", "🕸️ Manual sign is finished, obtained signature");
+			self.sign_incoming_msg_q.clear();
+			return true;
+		}
+		return false;
+	}
 }
 
 pub struct DKGState {
@@ -408,11 +516,11 @@ mod tests {
 	fn check_all_finished(parties: &mut Vec<MultiPartyECDSASettings>) -> bool {
 		for party in &mut parties.into_iter() {
 			match party.stage {
-				Stage::ManualReady => {
-					if let Some(_cos) = party.completed_offline_stage.clone() {
+				Stage::SignatureReady => {
+					if let Some(_sig) = party.signature.clone() {
 						continue;
 					}
-					panic!("No offline stage output for party {}", party.party_index);
+					panic!("No signature for party {}", party.party_index);
 				}
 				_ => return false,
 			}
@@ -461,6 +569,14 @@ mod tests {
 
 				if let Some(mut msgs) = party.get_outgoing_messages() {
 					msgs_pull.append(&mut msgs);
+				}
+			}
+
+			for party in &mut parties.into_iter() {
+				println!("Trying sing for party {}, Stage: {:?}", party.party_index, party.stage);
+				match party.try_sign(b"Webb") {
+					Ok(()) => (),
+					Err(_err) => (),
 				}
 			}
 
