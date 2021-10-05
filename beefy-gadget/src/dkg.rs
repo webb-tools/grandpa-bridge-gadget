@@ -191,9 +191,39 @@ impl MultiPartyECDSASettings {
 		}
 	}
 
-	pub fn is_ready_to_sing(self) -> bool {
+	pub fn extract_signature(&mut self) -> Option<SignatureRecid> {
+		match self.stage {
+			Stage::SignatureReady => {
+				if self.signature.is_some() {
+					let sig = std::mem::replace(&mut self.signature, None);
+
+					self.sign_outgoing_msg_q.clear();
+					self.sign_incoming_msg_q.clear();
+					self.advance_stage();
+
+					return sig;
+				} else {
+					error!("No signature but in SignatureReady state");
+					return None;
+				}
+			}
+			_ => {
+				warn!("Signature is not ready");
+				return None;
+			}
+		}
+	}
+
+	pub fn is_ready_to_sing(&self) -> bool {
 		match self.stage {
 			Stage::ManualReady => true,
+			_ => false,
+		}
+	}
+
+	pub fn is_signature_ready(&self) -> bool {
+		match self.stage {
+			Stage::SignatureReady => true,
 			_ => false,
 		}
 	}
@@ -525,6 +555,21 @@ mod tests {
 				_ => return false,
 			}
 		}
+
+		for party in &mut parties.into_iter() {
+			match party.extract_signature() {
+				Some(_sig) => (),
+				None => panic!("No signature extracted"),
+			}
+		}
+
+		for party in &mut parties.into_iter() {
+			match party.stage {
+				Stage::ManualReady => (),
+				_ => panic!("Stage must be ManualReady, but {:?} found", &party.stage),
+			}
+		}
+
 		true
 	}
 
