@@ -542,6 +542,12 @@ pub struct DKGState {
 #[cfg(test)]
 mod tests {
 	use super::{MultiPartyECDSASettings, Stage};
+	use curv::{
+		arithmetic::Converter,
+		cryptographic_primitives::hashing::{hash_sha256::HSha256, traits::Hash as CurvHash},
+		BigInt,
+	};
+	use multi_party_ecdsa::protocols::multi_party_ecdsa::gg_2020::party_i::verify;
 
 	fn check_all_finished(parties: &mut Vec<MultiPartyECDSASettings>) -> bool {
 		for party in &mut parties.into_iter() {
@@ -557,9 +563,14 @@ mod tests {
 		}
 
 		for party in &mut parties.into_iter() {
-			match party.extract_signature() {
-				Some(_sig) => (),
-				None => panic!("No signature extracted"),
+			if let Some(sig) = party.extract_signature() {
+				let pub_k = party.completed_offline_stage.as_ref().unwrap().public_key().clone();
+				let message = HSha256::create_hash(&[&BigInt::from_bytes(b"Webb")]);
+				if !verify(&sig, &pub_k, &message).is_ok() {
+					panic!("Invalid signature for party {}", party.party_index);
+				}
+			} else {
+				panic!("No signature extracted")
 			}
 		}
 
