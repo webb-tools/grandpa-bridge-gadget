@@ -214,7 +214,7 @@ impl MultiPartyECDSASettings {
 		}
 	}
 
-	pub fn is_ready_to_sing(&self) -> bool {
+	pub fn is_ready_to_sign(&self) -> bool {
 		match self.stage {
 			Stage::ManualReady => true,
 			_ => false,
@@ -629,7 +629,7 @@ mod tests {
 			}
 
 			for party in &mut parties.into_iter() {
-				println!("Trying sing for party {}, Stage: {:?}", party.party_index, party.stage);
+				println!("Trying sign for party {}, Stage: {:?}", party.party_index, party.stage);
 				match party.try_sign(b"Webb") {
 					Ok(()) => (),
 					Err(_err) => (),
