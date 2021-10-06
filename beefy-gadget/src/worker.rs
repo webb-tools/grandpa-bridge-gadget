@@ -443,8 +443,8 @@ where
 
 					self.gossip_engine
 						.lock()
-						.gossip_message(webb_topic::<B>(), message.clone(), true);
-					trace!(target: "webb", "🕸️  Sent DKG Message {:?}", *message);
+						.gossip_message(webb_topic::<B>(), encoded_dkg_message.clone(), true);
+					trace!(target: "webb", "🕸️  Sent DKG Message {:?}", encoded_dkg_message);
 				}
 			}
 		}
@@ -457,7 +457,7 @@ where
 				if let Some(curr_dkg) = self.dkg_state.curr_dkg.as_mut() {
 					match curr_dkg.handle_incoming(&message) {
 						Ok(()) => (),
-						Err(err) => debug!(target: "webb", "🕸️  Error handling DKG message {:?}", err),
+						Err(err) => debug!(target: "webb", "🕸️  Error while handling DKG message {:?}", err),
 					}
 					self.send_outgoing_dkg_messages();
 				}
@@ -465,14 +465,10 @@ where
 				if let Some(curr_dkg) = self.dkg_state.curr_dkg.as_mut() {
 					curr_dkg.try_finish();
 					if curr_dkg.is_ready_to_sign() {
-						debug!(target: "webb", "🕸️  DKG keygen round completed");
+						debug!(target: "webb", "🕸️  DKG is ready to sign");
 						self.dkg_state.accepted = true;
 					}
 				}
-			}
-			_ => {
-				warn!(target: "webb", "🕸️  Received DKG message of unknown type: {:?}", dkg_type);
-				return;
 			}
 		}
 	}
