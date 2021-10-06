@@ -455,13 +455,16 @@ where
 		match dkg_type {
 			DKGType::MultiPartyECDSA => {
 				if let Some(curr_dkg) = self.dkg_state.curr_dkg.as_mut() {
-					curr_dkg.handle_incoming(&message);
+					match curr_dkg.handle_incoming(&message) {
+						Ok(()) => (),
+						Err(err) => debug!(target: "webb", "🕸️  Error handling DKG message {:?}", err),
+					}
 					self.send_outgoing_dkg_messages();
 				}
 
 				if let Some(curr_dkg) = self.dkg_state.curr_dkg.as_mut() {
 					curr_dkg.try_finish();
-					if curr_dkg.local_key.is_some() {
+					if curr_dkg.is_ready_to_sign() {
 						debug!(target: "webb", "🕸️  DKG keygen round completed");
 						self.dkg_state.accepted = true;
 					}
