@@ -187,7 +187,7 @@ where
 			}
 		}
 
-		ValidationResult::Discard
+		return ValidationResult::ProcessAndKeep(self.topic);
 	}
 
 	fn message_expired<'a>(&'a self) -> Box<dyn FnMut(B::Hash, &[u8]) -> bool + 'a> {
