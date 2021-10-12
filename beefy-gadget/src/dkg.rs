@@ -9,6 +9,7 @@ use curv::{
 };
 use log::{debug, error, info, trace, warn};
 use round_based::{IsCritical, Msg, StateMachine};
+use serde::{Deserialize, Serialize};
 use sp_arithmetic::traits::AtLeast32BitUnsigned;
 use sp_keystore::{Error, SyncCryptoStore};
 use sp_runtime::traits::{Block, Hash, Header, MaybeDisplay};
@@ -92,7 +93,7 @@ pub trait MultiPartyECDSAKeyStore: SyncCryptoStore {
 /// A pointer to a keystore.
 pub type MultiPartyCryptoStorePtr = Arc<dyn MultiPartyECDSAKeyStore>;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 enum Stage {
 	KeygenReady,
 	Keygen,
@@ -118,9 +119,11 @@ pub struct MultiPartyECDSASettings {
 	pub threshold: u16,
 	pub parties: u16,
 
-	pub signers: Vec<usize>,
-
 	stage: Stage,
+
+	// Message processing
+	pub pending_keygen_msgs: Vec<Vec<u8>>,
+	pub pending_offline_msgs: Vec<Vec<u8>>,
 
 	// Key generation
 	pub keygen: Option<Keygen>,
@@ -137,8 +140,9 @@ impl MultiPartyECDSASettings {
 			party_index,
 			threshold,
 			parties,
-			signers: (1..=usize::from(threshold)).collect(),
 			stage: Stage::KeygenReady,
+			pending_keygen_msgs: Vec::new(),
+			pending_offline_msgs: Vec::new(),
 			keygen: None,
 			local_key: None,
 			offline_stage: None,
@@ -170,10 +174,24 @@ impl MultiPartyECDSASettings {
 	}
 
 	pub fn handle_incoming(&mut self, data: &[u8]) -> Result<(), MPCError> {
-		match self.stage {
-			Stage::Keygen => self.handle_incoming_keygen(data),
-			Stage::Offline => self.handle_incoming_offline_stage(data),
-			_ => Ok(()),
+		trace!(target: "webb", "🕸️ Enter handle incoming");
+
+		let decoded_wrapper: (Stage, Vec<u8>) = bincode::deserialize(&data[..]).unwrap();
+
+		if decoded_wrapper.0 == self.stage {
+			return match self.stage {
+				Stage::Keygen => self.handle_incoming_keygen(&decoded_wrapper.1),
+				Stage::Offline => self.handle_incoming_offline_stage(&decoded_wrapper.1),
+				_ => Ok(()),
+			};
+		} else {
+			if Stage::Keygen == decoded_wrapper.0 {
+				self.pending_keygen_msgs.push(decoded_wrapper.1);
+			} else if Stage::Offline == decoded_wrapper.0 {
+				self.pending_offline_msgs.push(decoded_wrapper.1)
+			}
+
+			Ok(())
 		}
 	}
 
@@ -182,6 +200,17 @@ impl MultiPartyECDSASettings {
 			Ok(keygen) => {
 				self.keygen = Some(keygen);
 				self.advance_stage();
+
+				// Processing pending messages
+				for msg in self.pending_keygen_msgs.clone().iter() {
+					if let Err(err) = self.handle_incoming_keygen(&msg) {
+						warn!(target: "webb", "🕸️ Error handling pending keygen msg {}", err.to_string());
+					}
+					self.proceed_keygen();
+				}
+				trace!(target: "webb", "🕸️ Handled {} pending keygen messages", self.pending_keygen_msgs.len());
+				self.pending_keygen_msgs.clear();
+
 				Ok(())
 			}
 			Err(err) => Err(err.to_string()),
@@ -190,27 +219,38 @@ impl MultiPartyECDSASettings {
 
 	pub fn reset_signers(&mut self, s_l: Vec<u16>) -> Result<(), String> {
 		match self.stage {
-			Stage::Keygen => Err("Cannot reset signers and start offline stage, Keygen is not complete".to_string()),
+			Stage::KeygenReady | Stage::Keygen => {
+				Err("Cannot reset signers and start offline stage, Keygen is not complete".to_string())
+			}
 			_ => {
-				trace!(target: "webb", "Resetting singers {:?}", s_l);
-				self.stage = Stage::Offline;
+				trace!(target: "webb", "🕸️ Resetting singers {:?}", s_l);
 
-				self.completed_offline_stage = None;
+				if let Some(local_key_clone) = self.local_key.clone() {
+					return match OfflineStage::new(self.party_index, s_l, local_key_clone) {
+						Ok(new_offline_stage) => {
+							self.stage = Stage::Offline;
+							self.offline_stage = Some(new_offline_stage);
+							self.completed_offline_stage = None;
 
-				// TODO: reset caches for msg deduplication and types check
+							for msg in self.pending_offline_msgs.clone().iter() {
+								if let Err(err) = self.handle_incoming_offline_stage(&msg) {
+									warn!(target: "webb", "🕸️ Error handling pending offline msg {}", err.to_string());
+								}
+								self.proceed_offline_stage();
+							}
+							self.pending_offline_msgs.clear();
+							trace!(target: "webb", "🕸️ Handled {} pending offline messages", self.pending_offline_msgs.len());
 
-				let local_key_clone = self.local_key.clone().unwrap();
-
-				return match OfflineStage::new(self.party_index, s_l, local_key_clone) {
-					Ok(new_offline_stage) => {
-						self.offline_stage = Some(new_offline_stage);
-						Ok(())
-					}
-					Err(err) => {
-						error!("Error creating new offline stage {}", err);
-						Err(err.to_string())
-					}
-				};
+							Ok(())
+						}
+						Err(err) => {
+							error!("Error creating new offline stage {}", err);
+							Err(err.to_string())
+						}
+					};
+				} else {
+					Err("No local key present".to_string())
+				}
 			}
 		}
 	}
@@ -330,7 +370,7 @@ impl MultiPartyECDSASettings {
 				.map(|m| {
 					trace!(target: "webb", "🕸️ MPC protocol message {:?}", *m);
 					let m_ser = bincode::serialize(m).unwrap();
-					m_ser
+					bincode::serialize(&(Stage::Keygen, m_ser)).unwrap()
 				})
 				.collect::<Vec<Vec<u8>>>();
 
@@ -354,7 +394,7 @@ impl MultiPartyECDSASettings {
 				.map(|m| {
 					trace!(target: "webb", "🕸️ MPC protocol message {:?}", *m);
 					let m_ser = bincode::serialize(m).unwrap();
-					m_ser
+					bincode::serialize(&(Stage::Offline, m_ser)).unwrap()
 				})
 				.collect::<Vec<Vec<u8>>>();
 

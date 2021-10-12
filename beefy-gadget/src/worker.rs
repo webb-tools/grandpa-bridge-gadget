@@ -501,23 +501,6 @@ where
 	}
 
 	pub(crate) async fn run(mut self) {
-		let mut votes = Box::pin(self.gossip_engine.lock().messages_for(topic::<B>()).filter_map(
-			|notification| async move {
-				// debug!(target: "beefy", "🥩 Got vote message: {:?}", notification);
-
-				match DKGVoteMessage::<MmrRootHash, NumberFor<B>, Public>::decode(&mut &notification.message[..]) {
-					Ok(res) => {
-						trace!(target: "webb", "Got vote message: {:?}", &res);
-						Some(res)
-					}
-					Err(err) => {
-						error!(target: "webb", "Error decoding vote {:?}", err);
-						None
-					}
-				}
-			},
-		));
-
 		let mut webb_dkg = Box::pin(self.gossip_engine.lock().messages_for(webb_topic::<B>()).filter_map(
 			|notification| async move {
 				// debug!(target: "webb", "🕸️  Got message: {:?}", notification);
@@ -534,17 +517,6 @@ where
 				notification = self.finality_notifications.next().fuse() => {
 					if let Some(notification) = notification {
 						self.handle_finality_notification(notification);
-					} else {
-						return;
-					}
-				},
-				vote = votes.next().fuse() => {
-					if let Some(vote) = vote {
-						let partial_sig: (GE, PartialSignature) = bincode::deserialize(&vote.signature).unwrap();
-						self.handle_vote(
-							(vote.commitment.payload, vote.commitment.block_number),
-							partial_sig,
-						);
 					} else {
 						return;
 					}
