@@ -459,6 +459,7 @@ dependencies = [
  "beefy-primitives",
  "beefy-test",
  "bincode",
+ "curv-kzen",
  "fnv",
  "futures 0.3.17",
  "log",
