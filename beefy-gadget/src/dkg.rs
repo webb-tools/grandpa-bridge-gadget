@@ -4,15 +4,20 @@ use codec::{Decode, Encode};
 use curv::{
 	arithmetic::Converter,
 	cryptographic_primitives::hashing::{hash_sha256::HSha256, traits::Hash as CurvHash},
-	elliptic::curves::secp256_k1::GE,
+	elliptic::curves::{
+		secp256_k1::{Secp256k1Point, Secp256k1Scalar, FE, GE},
+		traits::*,
+	},
 	BigInt,
 };
 use log::{debug, error, info, trace, warn};
 use round_based::{IsCritical, Msg, StateMachine};
+use secp256k1::curve::{Affine, Field};
 use serde::{Deserialize, Serialize};
 use sp_arithmetic::traits::AtLeast32BitUnsigned;
 use sp_keystore::{Error, SyncCryptoStore};
 use sp_runtime::traits::{Block, Hash, Header, MaybeDisplay};
+use std::convert::TryInto;
 
 use std::{collections::BTreeMap, hash::Hash as StdHash, sync::Arc};
 
@@ -646,39 +651,66 @@ where
 	}
 }
 
+pub fn recover_pub_key(sig: &SignatureRecid, message: &BigInt) -> Result<GE, String> {
+	recover_pub_key_raw(message, sig.recid, sig.r, sig.s)
+}
+
+pub fn recover_pub_key_raw(message: &BigInt, v: u8, r: Secp256k1Scalar, s: Secp256k1Scalar) -> Result<GE, String> {
+	// r^-1 * (s*R - z*G) = R * s * r^-1 - G * z * r^-1
+
+	let p_minus_order: Field = Field::new(0, 0, 0, 1, 0x45512319, 0x50B75FC4, 0x402DA172, 0x2FC9BAEE);
+
+	let order_as_fe: Field = Field::new(
+		0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFE, 0xBAAEDCE6, 0xAF48A03B, 0xBFD25E8C, 0xD0364141,
+	);
+
+	let mut fx = Field::default();
+	let r_bytes: [u8; 32] = r.to_big_int().to_bytes().try_into().unwrap();
+	let overflow = fx.set_b32(&r_bytes);
+	debug_assert!(overflow);
+
+	if v & 2 > 0 {
+		if fx >= p_minus_order {
+			return Err("Invalalid signature".to_string());
+		}
+		fx += order_as_fe;
+	}
+	let mut r_calc_point = Affine::default();
+	if !r_calc_point.set_xo_var(&fx, v & 1 > 0) {
+		return Err("Invalid signature".to_string());
+	}
+	r_calc_point.x.normalize();
+	r_calc_point.y.normalize();
+
+	let mut r_calc_bytes: Vec<u8> = Vec::new();
+	r_calc_bytes.extend_from_slice(&r_calc_point.x.b32());
+	r_calc_bytes.extend_from_slice(&r_calc_point.y.b32());
+
+	let r_calc = Secp256k1Point::from_bytes(&r_calc_bytes).unwrap(); // point, calculated from r value
+
+	let g: GE = ECPoint::generator(); // G
+	let z: FE = ECScalar::from(message); // z
+
+	let rn = r.invert();
+
+	let rsrn = r_calc * s * rn; // R * s * r^-1
+	let gzrn = g * z * rn; // G * z * r^-1
+
+	let pub_key = rsrn.sub_point(&gzrn.get_element());
+
+	return Ok(pub_key);
+}
+
 #[cfg(test)]
 mod tests {
-	use super::{MultiPartyECDSASettings, Stage};
+	use super::{recover_pub_key_raw, MultiPartyECDSASettings, Stage};
 	use curv::{
 		arithmetic::Converter,
 		cryptographic_primitives::hashing::{hash_sha256::HSha256, traits::Hash as CurvHash},
+		elliptic::curves::traits::{ECPoint, ECScalar},
 		BigInt,
 	};
 	use multi_party_ecdsa::protocols::multi_party_ecdsa::gg_2020::party_i::verify;
-
-	// fn check_all_signatures_ready(parties: &mut Vec<MultiPartyECDSASettings>) -> bool {
-	// 	for party in &mut parties.into_iter() {
-	// 		if let Some(sig) = party.extract_signature() {
-	// 			let pub_k = party.completed_offline_stage.as_ref().unwrap().public_key().clone();
-	// 			let message = HSha256::create_hash(&[&BigInt::from_bytes(b"Webb")]);
-	// 			if !verify(&sig, &pub_k, &message).is_ok() {
-	// 				panic!("Invalid signature for party {}", party.party_index);
-	// 			}
-	// 			println!("Party {}; sig: {:?}", party.party_index, &sig);
-	// 		} else {
-	// 			panic!("No signature extracted")
-	// 		}
-	// 	}
-
-	// 	for party in &mut parties.into_iter() {
-	// 		match party.stage {
-	// 			Stage::ManualReady => (),
-	// 			_ => panic!("Stage must be ManualReady, but {:?} found", &party.stage),
-	// 		}
-	// 	}
-
-	// 	true
-	// }
 
 	fn check_all_reached_stage(parties: &mut Vec<MultiPartyECDSASettings>, target_stage: Stage) -> bool {
 		for party in &mut parties.into_iter() {
@@ -771,5 +803,37 @@ mod tests {
 	#[test]
 	fn simulate_multi_party_t9_n10() {
 		simulate_multi_party(9, 10, (1..=10).collect());
+	}
+
+	#[test]
+	fn test_recover_pub_key_raw() {
+		let message = BigInt::from_hex("4ff5b6816dd118b8c362939cfb7332f667ff071a1828aa96c760871e1b5634fd").unwrap();
+
+		println!("Message: {:?}", message.to_hex());
+
+		let v: u8 = 0;
+		let r = ECScalar::from(
+			&BigInt::from_hex("4f282dd8be26cc20c27ccb986452411cc90ba9b9e9802256b7ecd3ba98b6fac4").unwrap(),
+		);
+		let s = ECScalar::from(
+			&BigInt::from_hex("5e378bbb7f7c7db9c4c7baf898134d636c810d2cb2cec5c85e36ee2c341265be").unwrap(),
+		);
+
+		println!("r: {:?}", &r);
+		println!("s: {:?}", &s);
+
+		let recovered = recover_pub_key_raw(&message, v, r, s).unwrap();
+
+		let expected_x = BigInt::from_hex("91a27f998f3971e5b62bbde231264271faf91f837c506fde88c4bfb9c533f1c2").unwrap();
+		let expected_y = BigInt::from_hex("c7b40c9fdca6815d43b315c8b039ecda1ba7eabd97794496c3023730581d7d63").unwrap();
+
+		let actual_x = recovered.x_coor().unwrap();
+		let actual_y = recovered.y_coor().unwrap();
+
+		println!("Expected pubkey: {}{}", expected_x.to_hex(), expected_y.to_hex());
+		println!("Recovered pubkey: {}{}", actual_x.to_hex(), actual_y.to_hex());
+
+		assert_eq!(actual_x, expected_x);
+		assert_eq!(actual_y, expected_y);
 	}
 }
