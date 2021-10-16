@@ -665,7 +665,10 @@ pub fn recover_pub_key_raw(message: &BigInt, v: u8, r: Secp256k1Scalar, s: Secp2
 	);
 
 	let mut fx = Field::default();
-	let r_bytes: [u8; 32] = r.to_big_int().to_bytes().try_into().unwrap();
+	let r_bytes: [u8; 32] = match r.to_big_int().to_bytes().try_into() {
+		Ok(res) => res,
+		Err(err) => return Err("Invalid r value".to_string()),
+	};
 	let overflow = fx.set_b32(&r_bytes);
 	debug_assert!(overflow);
 
@@ -686,7 +689,11 @@ pub fn recover_pub_key_raw(message: &BigInt, v: u8, r: Secp256k1Scalar, s: Secp2
 	r_calc_bytes.extend_from_slice(&r_calc_point.x.b32());
 	r_calc_bytes.extend_from_slice(&r_calc_point.y.b32());
 
-	let r_calc = Secp256k1Point::from_bytes(&r_calc_bytes).unwrap(); // point, calculated from r value
+	// point, calculated from r value
+	let r_calc = match Secp256k1Point::from_bytes(&r_calc_bytes) {
+		Ok(res) => res,
+		Err(err) => return Err("Could not construct Secp256k1Point from r value".to_string()),
+	};
 
 	let g: GE = ECPoint::generator(); // G
 	let z: FE = ECScalar::from(message); // z
@@ -699,6 +706,10 @@ pub fn recover_pub_key_raw(message: &BigInt, v: u8, r: Secp256k1Scalar, s: Secp2
 	let pub_key = rsrn.sub_point(&gzrn.get_element());
 
 	return Ok(pub_key);
+}
+
+pub fn convert_to_eth_address(pub_key: &GE) -> Result<String, String> {
+	Ok("".to_string())
 }
 
 #[cfg(test)]
