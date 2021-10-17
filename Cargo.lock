@@ -476,6 +476,7 @@ dependencies = [
  "sc-network-test",
  "sc-utils",
  "serde",
+ "sha3",
  "sp-api",
  "sp-application-crypto",
  "sp-arithmetic",
