@@ -60,6 +60,7 @@ impl BeefyKeystore {
 	/// Note that `message` usually will be pre-hashed before being signed.
 	///
 	/// Return the message signature or an error in case of failure.
+	#[allow(dead_code)]
 	pub fn sign(&self, public: &Public, message: &[u8]) -> Result<Signature, error::Error> {
 		let store = self
 			.0

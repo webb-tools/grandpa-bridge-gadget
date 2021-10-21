@@ -20,10 +20,8 @@ use core::convert::TryFrom;
 use std::{collections::BTreeSet, fmt::Debug, marker::PhantomData, sync::Arc};
 
 use codec::{Codec, Decode, Encode};
-use curv::elliptic::curves::secp256_k1::GE;
 use futures::{future, FutureExt, StreamExt};
 use log::{debug, error, info, trace, warn};
-use multi_party_ecdsa::protocols::multi_party_ecdsa::gg_2020::state_machine::sign::PartialSignature;
 use parking_lot::Mutex;
 
 use sc_client_api::{Backend, FinalityNotification, FinalityNotifications};
@@ -38,19 +36,18 @@ use sp_runtime::{
 };
 
 use beefy_primitives::{
-	crypto::{AuthorityId, Public, Signature},
-	BeefyApi, Commitment, ConsensusLog, MmrRootHash, ValidatorSet, VersionedCommitment, VoteMessage, BEEFY_ENGINE_ID,
-	GENESIS_AUTHORITY_SET_ID,
+	crypto::{AuthorityId, Public},
+	BeefyApi, Commitment, ConsensusLog, MmrRootHash, ValidatorSet, BEEFY_ENGINE_ID, GENESIS_AUTHORITY_SET_ID,
 };
 
 use crate::{
-	dkg::{webb_topic, DKGMessage, DKGRounds, DKGSignedCommitment, DKGState, DKGType, DKGVoteMessage},
+	dkg::{webb_topic, DKGMessage, DKGSignedCommitment, DKGState, MultiPartyECDSARounds},
 	error::{self},
-	gossip::{topic, GossipValidator},
+	gossip::GossipValidator,
 	keystore::BeefyKeystore,
 	metric_inc, metric_set,
 	metrics::Metrics,
-	notification, round, Client,
+	notification, Client,
 };
 
 pub(crate) struct WorkerParams<B, BE, C>
@@ -65,7 +62,7 @@ where
 	pub gossip_validator: Arc<GossipValidator<B>>,
 	pub min_block_delta: u32,
 	pub metrics: Option<Metrics>,
-	pub dkg_state: DKGState,
+	pub dkg_state: DKGState<(MmrRootHash, NumberFor<B>), Commitment<NumberFor<B>, MmrRootHash>>,
 }
 
 /// A BEEFY worker plays the BEEFY protocol
@@ -84,18 +81,20 @@ where
 	/// Min delta in block numbers between two blocks, BEEFY should vote on
 	min_block_delta: u32,
 	metrics: Option<Metrics>,
-	rounds: DKGRounds<MmrRootHash, NumberFor<B>>,
+	rounds: MultiPartyECDSARounds<(MmrRootHash, NumberFor<B>), Commitment<NumberFor<B>, MmrRootHash>>,
 	finality_notifications: FinalityNotifications<B>,
 	/// Best block we received a GRANDPA notification for
 	best_grandpa_block: NumberFor<B>,
 	/// Best block a BEEFY voting round has been concluded for
 	best_beefy_block: Option<NumberFor<B>>,
+	/// Current validator set id
+	current_validator_set: ValidatorSet<Public>,
 	/// Validator set id for the last signed commitment
 	last_signed_id: u64,
 	// keep rustc happy
 	_backend: PhantomData<BE>,
 	// dkg state
-	dkg_state: DKGState,
+	dkg_state: DKGState<(MmrRootHash, NumberFor<B>), Commitment<NumberFor<B>, MmrRootHash>>,
 }
 
 impl<B, C, BE> BeefyWorker<B, C, BE>
@@ -133,10 +132,11 @@ where
 			gossip_validator,
 			min_block_delta,
 			metrics,
-			rounds: DKGRounds::new(ValidatorSet::empty(), 0, 0, 1),
+			rounds: MultiPartyECDSARounds::new(0, 0, 1),
 			finality_notifications: client.finality_notification_stream(),
 			best_grandpa_block: client.info().finalized_number,
 			best_beefy_block: None,
+			current_validator_set: ValidatorSet::empty(),
 			last_signed_id: 0,
 			dkg_state,
 			_backend: PhantomData,
@@ -251,7 +251,7 @@ where
 			// TODO: (adoerr) Enacting a new authority set will also implicitly 'conclude'
 			// the currently active BEEFY voting round by starting a new one. This is
 			// temporary and needs to be replaced by proper round life cycle handling.
-			if active.id != self.rounds.validator_set_id()
+			if active.id != self.current_validator_set.id
 				|| (active.id == GENESIS_AUTHORITY_SET_ID && self.best_beefy_block.is_none())
 			{
 				debug!(target: "beefy", "🥩 New active validator set id: {:?}", active);
@@ -264,6 +264,8 @@ where
 
 				// verify the new validator set
 				let _ = self.verify_validator_set(notification.header.number(), active.clone());
+				// Setting new validator set id as curent
+				self.current_validator_set = active.clone();
 
 				debug!(target: "beefy", "🥩 New Rounds for id: {:?}", active.id);
 
@@ -290,13 +292,10 @@ where
 					party_inx,
 				);
 
-				self.rounds = DKGRounds::new(
-					active.clone(),
-					u16::try_from(party_inx).unwrap(),
-					thresh,
-					u16::try_from(n).unwrap(),
-				);
-				match self.rounds.start_keygen() {
+				self.rounds =
+					MultiPartyECDSARounds::new(u16::try_from(party_inx).unwrap(), thresh, u16::try_from(n).unwrap());
+
+				match self.rounds.start_keygen(active.clone().id) {
 					Ok(()) => info!(target: "webb", "Keygen started successfully"),
 					Err(err) => error!("Error starting keygen {}", err),
 				}
@@ -312,7 +311,10 @@ where
 		}
 
 		if self.should_vote_on(*notification.header.number()) {
-			let authority_id = if let Some(id) = self.key_store.authority_id(self.rounds.validators().as_slice()) {
+			if let Some(id) = self
+				.key_store
+				.authority_id(self.current_validator_set.validators.as_slice())
+			{
 				debug!(target: "beefy", "🥩 Local authority id: {:?}", id);
 				id
 			} else {
@@ -326,110 +328,77 @@ where
 				warn!(target: "beefy", "🥩 No MMR root digest found for: {:?}", notification.header.hash());
 				return;
 			};
+			let block_number = notification.header.number().clone();
 
 			let commitment = Commitment {
-				payload: mmr_root,
-				block_number: notification.header.number(),
-				validator_set_id: self.rounds.validator_set_id(),
+				payload: mmr_root.clone(),
+				block_number: block_number.clone(),
+				validator_set_id: self.current_validator_set.id.clone(),
 			};
-			let encoded_commitment = commitment.encode();
 
 			trace!(target: "webb", "🕸️ Created commitment");
-			if self.rounds.is_ready_to_sign() {
+			if self.rounds.is_ready_to_vote() {
 				trace!(target: "webb", "🕸️ Signing commitment");
 
-				let partial_sig = self
-					.rounds
-					.vote((commitment.payload, *commitment.block_number), &encoded_commitment)
-					.unwrap();
-
-				let message = DKGVoteMessage {
-					commitment,
-					id: authority_id.clone(),
-					signature: bincode::serialize(&partial_sig).unwrap(),
-				};
-
-				let encoded_message = message.encode();
-
-				let dkg_msg = DKGMessage {
-					id: authority_id.clone(),
-					dkg_type: DKGType::Vote,
-					message: encoded_message,
-				};
-
-				let dkg_encoded_msg = dkg_msg.encode();
-
-				metric_inc!(self, beefy_votes_sent);
-
-				debug!(target: "webb", "🕸️ Sent vote message: {:?}", message);
-
-				self.gossip_engine
-					.lock()
-					.gossip_message(webb_topic::<B>(), dkg_encoded_msg, true);
+				self.rounds.vote((mmr_root, block_number), commitment).unwrap();
 			} else {
 				debug!(target: "webb", "Not ready to sign, skipping")
 			}
 		}
 	}
 
-	fn handle_vote(&mut self, round: (MmrRootHash, NumberFor<B>), vote: (GE, PartialSignature)) {
-		self.gossip_validator.note_round(round.1);
+	fn process_finished_rounds(&mut self) {
+		for finished_round in self.rounds.get_finished_rounds() {
+			// id is stored for skipped session metric calculation
+			self.last_signed_id = self.current_validator_set.id;
 
-		trace!(target: "webb", "Adding vote");
+			let round_key = finished_round.key;
 
-		let vote_added = self.rounds.add_vote(round, vote);
+			let signed_commitment = DKGSignedCommitment {
+				commitment: finished_round.payload,
+				signature: finished_round.signature,
+			};
 
-		if vote_added && self.rounds.is_done(&round) {
-			trace!(target: "webb", "🕸️ Round done, extracting signature");
+			metric_set!(self, beefy_round_concluded, round_key.1);
 
-			if let Some(signature) = self.rounds.drop(&round) {
-				// id is stored for skipped session metric calculation
-				self.last_signed_id = self.rounds.validator_set_id();
+			info!(target: "webb", "🕸️  Round #{} concluded, committed: {:?}.", round_key.1, signed_commitment);
 
-				let commitment = Commitment {
-					payload: round.0,
-					block_number: round.1,
-					validator_set_id: self.last_signed_id,
-				};
+			// if self
+			// 	.backend
+			// 	.append_justification(
+			// 		BlockId::Number(round.1),
+			// 		(
+			// 			BEEFY_ENGINE_ID,
+			// 			VersionedCommitment::V1(signed_commitment.clone()).encode(),
+			// 		),
+			// 	)
+			// 	.is_err()
+			// {
+			// 	// just a trace, because until the round lifecycle is improved, we will
+			// 	// conclude certain rounds multiple times.
+			// 	trace!(target: "beefy", "🥩 Failed to append justification: {:?}", signed_commitment);
+			// }
 
-				let signature_bytes = bincode::serialize(&signature).unwrap();
-				let signed_commitment = DKGSignedCommitment {
-					commitment,
-					signature: signature_bytes,
-				};
+			// self.signed_commitment_sender.notify(signed_commitment);
 
-				metric_set!(self, beefy_round_concluded, round.1);
-
-				info!(target: "webb", "🕸️  Round #{} concluded, committed: {:?}.", round.1, signed_commitment);
-
-				// if self
-				// 	.backend
-				// 	.append_justification(
-				// 		BlockId::Number(round.1),
-				// 		(
-				// 			BEEFY_ENGINE_ID,
-				// 			VersionedCommitment::V1(signed_commitment.clone()).encode(),
-				// 		),
-				// 	)
-				// 	.is_err()
-				// {
-				// 	// just a trace, because until the round lifecycle is improved, we will
-				// 	// conclude certain rounds multiple times.
-				// 	trace!(target: "beefy", "🥩 Failed to append justification: {:?}", signed_commitment);
-				// }
-
-				// self.signed_commitment_sender.notify(signed_commitment);
-
-				self.best_beefy_block = Some(round.1);
-
-				metric_set!(self, beefy_best_block, round.1);
+			if let Some(best) = self.best_beefy_block {
+				if round_key.1 > best {
+					self.best_beefy_block = Some(round_key.1);
+				}
+			} else {
+				self.best_beefy_block = Some(round_key.1);
 			}
+
+			metric_set!(self, beefy_best_block, round_key.1);
 		}
 	}
 
 	fn send_outgoing_dkg_messages(&mut self) {
 		debug!(target: "webb", "🕸️ Try sending DKG messages");
-		let authority_id = if let Some(id) = self.key_store.authority_id(self.rounds.validators().as_slice()) {
+		let authority_id = if let Some(id) = self
+			.key_store
+			.authority_id(self.current_validator_set.validators.as_slice())
+		{
 			debug!(target: "webb", "🕸️  Local authority id: {:?}", id);
 			id
 		} else {
@@ -447,57 +416,43 @@ where
 			}
 		}
 
-		if let Some(outgoing_messages) = self.rounds.get_outgoing_messages() {
-			for message in &outgoing_messages {
-				let dkg_message = DKGMessage {
-					id: authority_id.clone(),
-					dkg_type: DKGType::MultiPartyECDSA,
-					message: message.to_owned(),
-				};
-				let encoded_dkg_message = dkg_message.encode();
-				debug!(
-					target: "webb",
-					"🕸️  DKG Message: {:?}, encoded: {:?}",
-					dkg_message,
-					encoded_dkg_message
-				);
+		for message in self.rounds.get_outgoing_messages() {
+			let dkg_message = DKGMessage {
+				id: authority_id.clone(),
+				payload: message,
+			};
+			let encoded_dkg_message = dkg_message.encode();
+			debug!(
+				target: "webb",
+				"🕸️  DKG Message: {:?}, encoded: {:?}",
+				dkg_message,
+				encoded_dkg_message
+			);
 
-				self.gossip_engine
-					.lock()
-					.gossip_message(webb_topic::<B>(), encoded_dkg_message.clone(), true);
-				trace!(target: "webb", "🕸️  Sent DKG Message {:?}", encoded_dkg_message);
-			}
+			self.gossip_engine
+				.lock()
+				.gossip_message(webb_topic::<B>(), encoded_dkg_message.clone(), true);
+			trace!(target: "webb", "🕸️  Sent DKG Message {:?}", encoded_dkg_message);
 		}
 	}
 
-	fn process_incoming_dkg_message(&mut self, id: Public, dkg_type: DKGType, message: Vec<u8>) {
-		debug!(target: "webb", "🕸️  Process DKG message id: {:?}, type: {:?}, message: {:?}", id, dkg_type, message);
-		match dkg_type {
-			DKGType::MultiPartyECDSA => {
-				match self.rounds.handle_incoming(&message) {
-					Ok(()) => (),
-					Err(err) => debug!(target: "webb", "🕸️  Error while handling DKG message {:?}", err),
-				}
-				self.send_outgoing_dkg_messages();
+	fn process_incoming_dkg_message(&mut self, dkg_msg: DKGMessage<Public, (MmrRootHash, NumberFor<B>)>) {
+		debug!(target: "webb", "🕸️  Process DKG message {}", &dkg_msg);
 
-				self.rounds.proceed();
-
-				if self.rounds.is_ready_to_sign() {
-					debug!(target: "webb", "🕸️  DKG is ready to sign");
-					self.dkg_state.accepted = true;
-				}
-			}
-			DKGType::Vote => match DKGVoteMessage::<MmrRootHash, NumberFor<B>, Public>::decode(&mut &message[..]) {
-				Ok(vote) => {
-					trace!(target: "webb", "Got vote message: {:?}", &vote);
-					let partial_sig: (GE, PartialSignature) = bincode::deserialize(&vote.signature).unwrap();
-					self.handle_vote((vote.commitment.payload, vote.commitment.block_number), partial_sig);
-				}
-				Err(err) => {
-					error!(target: "webb", "Error decoding vote {:?}", err);
-				}
-			},
+		match self.rounds.handle_incoming(dkg_msg.payload) {
+			Ok(()) => (),
+			Err(err) => debug!(target: "webb", "🕸️  Error while handling DKG message {:?}", err),
 		}
+		self.send_outgoing_dkg_messages();
+
+		self.rounds.proceed();
+
+		if self.rounds.is_ready_to_vote() {
+			debug!(target: "webb", "🕸️  DKG is ready to sign");
+			self.dkg_state.accepted = true;
+		}
+
+		self.process_finished_rounds();
 	}
 
 	pub(crate) async fn run(mut self) {
@@ -505,7 +460,7 @@ where
 			|notification| async move {
 				// debug!(target: "webb", "🕸️  Got message: {:?}", notification);
 
-				DKGMessage::<Public>::decode(&mut &notification.message[..]).ok()
+				DKGMessage::<Public, (MmrRootHash, NumberFor<B>)>::decode(&mut &notification.message[..]).ok()
 			},
 		));
 
@@ -523,7 +478,7 @@ where
 				},
 				dkg_msg = webb_dkg.next().fuse() => {
 					if let Some(dkg_msg) = dkg_msg {
-						self.process_incoming_dkg_message(dkg_msg.id, dkg_msg.dkg_type, dkg_msg.message);
+						self.process_incoming_dkg_message(dkg_msg);
 					} else {
 						return;
 					}
