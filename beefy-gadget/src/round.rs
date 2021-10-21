@@ -14,105 +14,110 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use std::{collections::BTreeMap, hash::Hash};
+#[allow(dead_code)]
+mod rounds {
 
-use log::{debug, trace};
+	use std::{collections::BTreeMap, hash::Hash};
 
-use beefy_primitives::{
-	crypto::{Public, Signature},
-	ValidatorSet, ValidatorSetId,
-};
-use sp_arithmetic::traits::AtLeast32BitUnsigned;
-use sp_runtime::traits::MaybeDisplay;
+	use log::{debug, trace};
 
-#[derive(Default)]
-struct RoundTracker {
-	votes: Vec<(Public, Signature)>,
-}
+	use beefy_primitives::{
+		crypto::{Public, Signature},
+		ValidatorSet, ValidatorSetId,
+	};
+	use sp_arithmetic::traits::AtLeast32BitUnsigned;
+	use sp_runtime::traits::MaybeDisplay;
 
-impl RoundTracker {
-	fn add_vote(&mut self, vote: (Public, Signature)) -> bool {
-		// this needs to handle equivocations in the future
-		if self.votes.contains(&vote) {
-			return false;
+	#[allow(dead_code)]
+	#[derive(Default)]
+	struct RoundTracker {
+		votes: Vec<(Public, Signature)>,
+	}
+
+	impl RoundTracker {
+		fn add_vote(&mut self, vote: (Public, Signature)) -> bool {
+			// this needs to handle equivocations in the future
+			if self.votes.contains(&vote) {
+				return false;
+			}
+
+			self.votes.push(vote);
+			true
 		}
 
-		self.votes.push(vote);
-		true
-	}
-
-	fn is_done(&self, threshold: usize) -> bool {
-		self.votes.len() >= threshold
-	}
-}
-
-fn threshold(authorities: usize) -> usize {
-	let faulty = authorities.saturating_sub(1) / 3;
-	authorities - faulty
-}
-
-pub(crate) struct Rounds<Hash, Number> {
-	rounds: BTreeMap<(Hash, Number), RoundTracker>,
-	validator_set: ValidatorSet<Public>,
-}
-
-impl<H, N> Rounds<H, N>
-where
-	H: Ord + Hash,
-	N: Ord + AtLeast32BitUnsigned + MaybeDisplay,
-{
-	pub(crate) fn new(validator_set: ValidatorSet<Public>) -> Self {
-		Rounds {
-			rounds: BTreeMap::new(),
-			validator_set,
+		fn is_done(&self, threshold: usize) -> bool {
+			self.votes.len() >= threshold
 		}
 	}
-}
 
-impl<H, N> Rounds<H, N>
-where
-	H: Ord + Hash,
-	N: Ord + AtLeast32BitUnsigned + MaybeDisplay,
-{
-	pub(crate) fn validator_set_id(&self) -> ValidatorSetId {
-		self.validator_set.id
+	fn threshold(authorities: usize) -> usize {
+		let faulty = authorities.saturating_sub(1) / 3;
+		authorities - faulty
 	}
 
-	pub(crate) fn validators(&self) -> Vec<Public> {
-		self.validator_set.validators.clone()
+	pub(crate) struct Rounds<Hash, Number> {
+		rounds: BTreeMap<(Hash, Number), RoundTracker>,
+		validator_set: ValidatorSet<Public>,
 	}
 
-	pub(crate) fn add_vote(&mut self, round: (H, N), vote: (Public, Signature)) -> bool {
-		self.rounds.entry(round).or_default().add_vote(vote)
+	impl<H, N> Rounds<H, N>
+	where
+		H: Ord + Hash,
+		N: Ord + AtLeast32BitUnsigned + MaybeDisplay,
+	{
+		pub(crate) fn new(validator_set: ValidatorSet<Public>) -> Self {
+			Rounds {
+				rounds: BTreeMap::new(),
+				validator_set,
+			}
+		}
 	}
 
-	pub(crate) fn is_done(&self, round: &(H, N)) -> bool {
-		let done = self
-			.rounds
-			.get(round)
-			.map(|tracker| tracker.is_done(threshold(self.validator_set.validators.len())))
-			.unwrap_or(false);
+	impl<H, N> Rounds<H, N>
+	where
+		H: Ord + Hash,
+		N: Ord + AtLeast32BitUnsigned + MaybeDisplay,
+	{
+		pub(crate) fn validator_set_id(&self) -> ValidatorSetId {
+			self.validator_set.id
+		}
 
-		debug!(target: "beefy", "🥩 Round #{} done: {}", round.1, done);
+		pub(crate) fn validators(&self) -> Vec<Public> {
+			self.validator_set.validators.clone()
+		}
 
-		done
-	}
+		pub(crate) fn add_vote(&mut self, round: (H, N), vote: (Public, Signature)) -> bool {
+			self.rounds.entry(round).or_default().add_vote(vote)
+		}
 
-	pub(crate) fn drop(&mut self, round: &(H, N)) -> Option<Vec<Option<Signature>>> {
-		trace!(target: "beefy", "🥩 About to drop round #{}", round.1);
+		pub(crate) fn is_done(&self, round: &(H, N)) -> bool {
+			let done = self
+				.rounds
+				.get(round)
+				.map(|tracker| tracker.is_done(threshold(self.validator_set.validators.len())))
+				.unwrap_or(false);
 
-		let signatures = self.rounds.remove(round)?.votes;
+			debug!(target: "beefy", "🥩 Round #{} done: {}", round.1, done);
 
-		Some(
-			self.validator_set
-				.validators
-				.iter()
-				.map(|authority_id| {
-					signatures
-						.iter()
-						.find_map(|(id, sig)| if id == authority_id { Some(sig.clone()) } else { None })
-				})
-				.collect(),
-		)
+			done
+		}
+
+		pub(crate) fn drop(&mut self, round: &(H, N)) -> Option<Vec<Option<Signature>>> {
+			trace!(target: "beefy", "🥩 About to drop round #{}", round.1);
+
+			let signatures = self.rounds.remove(round)?.votes;
+
+			Some(
+				self.validator_set
+					.validators
+					.iter()
+					.map(|authority_id| {
+						signatures
+							.iter()
+							.find_map(|(id, sig)| if id == authority_id { Some(sig.clone()) } else { None })
+					})
+					.collect(),
+			)
+		}
 	}
 }
