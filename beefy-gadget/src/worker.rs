@@ -284,14 +284,6 @@ where
 					self.dkg_state.past_dkg = Some(dkg);
 				}
 
-				info!(
-					target: "webb",
-					"🕸️  Starting new DKG w/ size {:?}, threshold {:?}, party_index {:?}",
-					n,
-					thresh,
-					party_inx,
-				);
-
 				self.rounds =
 					MultiPartyECDSARounds::new(u16::try_from(party_inx).unwrap(), thresh, u16::try_from(n).unwrap());
 
@@ -336,11 +328,13 @@ where
 				validator_set_id: self.current_validator_set.id.clone(),
 			};
 
-			trace!(target: "webb", "🕸️ Created commitment");
+			trace!(target: "webb", "🕸️  Created commitment");
 			if self.rounds.is_ready_to_vote() {
-				trace!(target: "webb", "🕸️ Signing commitment");
+				trace!(target: "webb", "🕸️  Signing commitment");
 
 				self.rounds.vote((mmr_root, block_number), commitment).unwrap();
+
+				self.send_outgoing_dkg_messages();
 			} else {
 				debug!(target: "webb", "Not ready to sign, skipping")
 			}
@@ -394,7 +388,7 @@ where
 	}
 
 	fn send_outgoing_dkg_messages(&mut self) {
-		debug!(target: "webb", "🕸️ Try sending DKG messages");
+		debug!(target: "webb", "🕸️  Try sending DKG messages");
 		let authority_id = if let Some(id) = self
 			.key_store
 			.authority_id(self.current_validator_set.validators.as_slice())
@@ -410,8 +404,10 @@ where
 		// TODO: run this in a different place, tied to certain number of blocks probably
 		if self.rounds.is_offline_ready() {
 			// TODO: use deterministic random signers set
-			match self.rounds.reset_signers((1..=self.rounds.dkg_params().2).collect()) {
-				Ok(()) => info!(target: "webb", "🕸️ Reset signers"),
+			let signer_set_id = self.current_validator_set.id;
+			let s_l = (1..=self.rounds.dkg_params().2).collect();
+			match self.rounds.reset_signers(signer_set_id, s_l) {
+				Ok(()) => info!(target: "webb", "🕸️  Reset signers"),
 				Err(err) => error!("Error resetting signers {}", err),
 			}
 		}
@@ -444,8 +440,6 @@ where
 			Err(err) => debug!(target: "webb", "🕸️  Error while handling DKG message {:?}", err),
 		}
 		self.send_outgoing_dkg_messages();
-
-		self.rounds.proceed();
 
 		if self.rounds.is_ready_to_vote() {
 			debug!(target: "webb", "🕸️  DKG is ready to sign");
