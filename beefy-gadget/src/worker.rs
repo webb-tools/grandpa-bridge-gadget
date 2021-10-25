@@ -17,7 +17,10 @@
 #![allow(clippy::collapsible_match)]
 
 use core::convert::TryFrom;
-use std::{collections::BTreeSet, fmt::Debug, marker::PhantomData, sync::Arc};
+use curv::{arithmetic::Converter, elliptic::curves::traits::ECScalar};
+use multi_party_ecdsa::protocols::multi_party_ecdsa::gg_2020::party_i::SignatureRecid;
+use sp_core::ecdsa;
+use std::{collections::BTreeSet, convert::TryInto, fmt::Debug, marker::PhantomData, sync::Arc};
 
 use codec::{Codec, Decode, Encode};
 use futures::{future, FutureExt, StreamExt};
@@ -26,6 +29,8 @@ use parking_lot::Mutex;
 
 use sc_client_api::{Backend, FinalityNotification, FinalityNotifications};
 use sc_network_gossip::GossipEngine;
+
+use beefy_primitives::{crypto::Signature, SignedCommitment, VersionedCommitment};
 
 use sp_api::BlockId;
 use sp_arithmetic::traits::AtLeast32Bit;
@@ -41,7 +46,7 @@ use beefy_primitives::{
 };
 
 use crate::{
-	dkg::{webb_topic, DKGMessage, DKGSignedCommitment, DKGState, MultiPartyECDSARounds},
+	dkg::{webb_topic, DKGMessage, DKGState, MultiPartyECDSARounds},
 	error::{self},
 	gossip::GossipValidator,
 	keystore::BeefyKeystore,
@@ -341,39 +346,83 @@ where
 		}
 	}
 
+	fn convert_signature(&mut self, sig_recid: &SignatureRecid) -> Option<Signature> {
+		let r = sig_recid.r.to_big_int().to_bytes();
+		let s = sig_recid.s.to_big_int().to_bytes();
+		let v = sig_recid.recid;
+
+		let mut sig_vec: Vec<u8> = Vec::new();
+
+		for _ in 0..(32 - r.len()) {
+			sig_vec.extend(&[0]);
+		}
+		sig_vec.extend_from_slice(&r);
+
+		for _ in 0..(32 - s.len()) {
+			sig_vec.extend(&[0]);
+		}
+		sig_vec.extend_from_slice(&s);
+
+		sig_vec.extend(&[v]);
+
+		if 65 != sig_vec.len() {
+			warn!(target: "webb", "🕸️  Invalid signature len: {}, expected 65", sig_vec.len());
+			return None;
+		}
+
+		let mut dkg_sig_arr: [u8; 65] = [0; 65];
+		dkg_sig_arr.copy_from_slice(&sig_vec[0..65]);
+
+		return match ecdsa::Signature(dkg_sig_arr).try_into() {
+			Ok(sig) => {
+				debug!(target: "webb", "🕸️  Converted signature {:?}", &sig);
+				Some(sig)
+			}
+			Err(err) => {
+				warn!(target: "webb", "🕸️  Error converting signature {:?}", err);
+				None
+			}
+		};
+	}
+
 	fn process_finished_rounds(&mut self) {
 		for finished_round in self.rounds.get_finished_rounds() {
 			// id is stored for skipped session metric calculation
 			self.last_signed_id = self.current_validator_set.id;
 
 			let round_key = finished_round.key;
+			let sig_recid: SignatureRecid = bincode::deserialize(&finished_round.signature).unwrap();
+			let signature = self.convert_signature(&sig_recid);
 
-			let signed_commitment = DKGSignedCommitment {
-				commitment: finished_round.payload,
-				signature: finished_round.signature,
+			let mut signatures: Vec<Option<Signature>> = vec![];
+			if signature.is_some() {
+				signatures.push(signature);
+			}
+
+			let signed_commitment = SignedCommitment {
+				commitment: finished_round.payload.clone(),
+				signatures,
 			};
 
-			metric_set!(self, beefy_round_concluded, round_key.1);
+			info!(target: "webb", "🕸️  Round #{} concluded, committed: {:?}.", round_key.1, &signed_commitment);
 
-			info!(target: "webb", "🕸️  Round #{} concluded, committed: {:?}.", round_key.1, signed_commitment);
+			if self
+				.backend
+				.append_justification(
+					BlockId::Number(round_key.1),
+					(
+						BEEFY_ENGINE_ID,
+						VersionedCommitment::V1(signed_commitment.clone()).encode(),
+					),
+				)
+				.is_err()
+			{
+				// just a trace, because until the round lifecycle is improved, we will
+				// conclude certain rounds multiple times.
+				trace!(target: "beefy", "🥩 Failed to append justification: {:?}", signed_commitment);
+			}
 
-			// if self
-			// 	.backend
-			// 	.append_justification(
-			// 		BlockId::Number(round.1),
-			// 		(
-			// 			BEEFY_ENGINE_ID,
-			// 			VersionedCommitment::V1(signed_commitment.clone()).encode(),
-			// 		),
-			// 	)
-			// 	.is_err()
-			// {
-			// 	// just a trace, because until the round lifecycle is improved, we will
-			// 	// conclude certain rounds multiple times.
-			// 	trace!(target: "beefy", "🥩 Failed to append justification: {:?}", signed_commitment);
-			// }
-
-			// self.signed_commitment_sender.notify(signed_commitment);
+			self.signed_commitment_sender.notify(signed_commitment);
 
 			if let Some(best) = self.best_beefy_block {
 				if round_key.1 > best {
