@@ -177,7 +177,7 @@ where
 		}
 
 		trace!(target: "webb", "🕸️  Got a message: {:?}, from: {:?}", data_copy, sender);
-		match DKGMessage::<Public>::decode(&mut data_copy) {
+		match DKGMessage::<Public, (MmrRootHash, NumberFor<B>)>::decode(&mut data_copy) {
 			Ok(msg) => {
 				trace!(target: "webb", "🕸️  Got webb dkg message: {:?}, from: {:?}", msg, sender);
 				return ValidationResult::ProcessAndKeep(webb_topic::<B>());
